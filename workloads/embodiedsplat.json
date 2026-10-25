@@ -1,0 +1,13 @@
+{
+  "schema": "garda-workload/v1",
+  "model": "EmbodiedSplat",
+  "datasets": ["scannet", "scannetpp", "matterport3d"],
+  "external_model": "local/workloads/repos/EmbodiedSplat",
+  "dataset_roots": {"scannet": "local/workloads/data/scannet", "scannetpp": "local/workloads/data/scannetpp", "matterport3d": "local/workloads/data/matterport3d"},
+  "capture_dir": "local/captures/embodiedsplat",
+  "config": "configs/embodiedsplat_scannet.json",
+  "base_config": "configs/embodiedsplat_single64_base.json",
+  "prepare": "python scripts/prepare_embodiedsplat.py --repeats 7",
+  "reproduce": "python scripts/reproduce_embodiedsplat.py --dataset all --workers 4",
+  "quality": {"min_class_agreement": 0.99, "max_regret": 0.01, "min_within_tolerance": 0.99}
+}

@@ -1,0 +1,21 @@
+# Build and package output
+build/
+dist/
+install/
+*.egg-info/
+
+# Local environments and caches
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.py[cod]
+
+# Large model, dataset, capture, and generated result assets
+local/
+results/
+
+# Local diagnostics
+*.log
+*.tmp

@@ -1,0 +1,19 @@
+[project]
+name = "garda-gs-simulator"
+version = "0.1.0"
+description = "GARDA real-workload transaction and tile cycle simulator"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "numba>=0.61"]
+
+[project.optional-dependencies]
+capture = ["torch>=2.5", "scipy>=1.10", "triton>=3.1"]
+
+[project.scripts]
+garda-sim = "garda.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["garda*"]
