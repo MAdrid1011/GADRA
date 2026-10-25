@@ -1,6 +1,6 @@
-# GARDA
+# GADRA
 
-GARDA is a cycle-level simulator for generalized 3D Gaussian semantic
+GADRA is a cycle-level simulator for generalized 3D Gaussian semantic
 encoding. It captures real SceneSplat, Chorus, and EmbodiedSplat executions on
 ScanNet, ScanNet++, and Matterport3D, then replays their operator and dependency
 graphs on a fixed 4,096-PE FP32 architecture.
@@ -45,11 +45,11 @@ environments, datasets, and checkpoints described in
 
 ## Local Assets
 
-Place or link the external workload tree at `local/workloads`, or point GARDA
+Place or link the external workload tree at `local/workloads`, or point GADRA
 to an existing tree:
 
 ```bash
-export GARDA_WORKLOADS_ROOT=/path/to/real/workloads
+export GADRA_WORKLOADS_ROOT=/path/to/real/workloads
 ```
 
 The tree must contain the upstream `SceneSplat`, `Chorus`, and `EmbodiedSplat`
@@ -62,7 +62,7 @@ and commands. Captures are written to `local/captures/<model>/`.
 Run the official model paths to rebuild all nine inputs and GPU references:
 
 ```bash
-CAPTURE_PYTHON="${GARDA_WORKLOADS_ROOT:-$PWD/local/workloads}/.venv-cu121/bin/python"
+CAPTURE_PYTHON="${GADRA_WORKLOADS_ROOT:-$PWD/local/workloads}/.venv-cu121/bin/python"
 OMP_NUM_THREADS=4 "$CAPTURE_PYTHON" scripts/prepare_scenesplat.py --repeats 7
 OMP_NUM_THREADS=4 "$CAPTURE_PYTHON" scripts/prepare_chorus_scannet.py --repeats 7
 OMP_NUM_THREADS=4 "$CAPTURE_PYTHON" scripts/prepare_embodiedsplat.py --repeats 7

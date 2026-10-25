@@ -2,7 +2,7 @@
 
 ## External Interface
 
-`main()` implements `python -m garda` and the installed `garda-sim` command.
+`main()` implements `python -m gadra` and the installed `gadra-sim` command.
 It exposes low-level `baseline`, `capture`, and `simulate-case` operations.
 
 ## Internal Helpers

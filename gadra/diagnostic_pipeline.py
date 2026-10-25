@@ -309,7 +309,7 @@ class Program:
         original=self.tensor((len(native),1),4,'index')
         self.event([],original,'aten.full.default',scalar_ops_per_row=2)
         payload=self.tensor((len(used)+len(native),1),4,'index')
-        at=self.event([original],payload,'garda.unique_index',
+        at=self.event([original],payload,'gadra.unique_index',
                       diagnostic_unique_native=native,diagnostic_unique_rows=n)
         self.g.events[at]['diagnostic_row_local']=False
         selected=dict(payload,shape=[len(used),1],bytes=len(used)*4)

@@ -1,5 +1,5 @@
 {
-  "schema": "garda-workload/v1",
+  "schema": "gadra-workload/v1",
   "model": "EmbodiedSplat",
   "datasets": ["scannet", "scannetpp", "matterport3d"],
   "external_model": "local/workloads/repos/EmbodiedSplat",

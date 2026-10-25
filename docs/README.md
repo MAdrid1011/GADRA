@@ -1,6 +1,6 @@
 # Documentation
 
-This directory documents GARDA's simulator boundary, real-workload input
+This directory documents GADRA's simulator boundary, real-workload input
 contract, and the correspondence between the proposed mechanisms and code.
 
 - `architecture.md` describes capture, replay, and timing accounting.

@@ -338,7 +338,7 @@ class Replay:
             language,final,prefix,mapping=values
             owners=mapping.flatten().long()
             return [F.normalize((language+final[owners])-prefix[owners],dim=1)]
-        if event.get('op')=='garda.unique_index':
+        if event.get('op')=='gadra.unique_index':
             # Recompute IDs/inverse from the runtime map tensor. The event's
             # captured diagnostic_unique_native list is timing topology only.
             used,inverse=torch.unique(source.flatten(),sorted=True,return_inverse=True)
@@ -558,7 +558,7 @@ class Replay:
             recent_runtime.append((i,[tuple(v.shape) for v in actual if isinstance(v,torch.Tensor)]))
             recent_runtime=recent_runtime[-14:]
             if len(refs)!=len(actual):raise AssertionError(('Output tree mismatch',i))
-            if step.get('event',{}).get('op')=='garda.unique_index':
+            if step.get('event',{}).get('op')=='gadra.unique_index':
                 input_count=resolve(step['inputs'])[0].numel()
                 old_count=(math.prod(step['event']['outputs'][0]['shape'])-
                            math.prod(step['event']['inputs'][0]['shape']))
@@ -641,7 +641,7 @@ def validate(family,dataset,index,destination,k_tile=None,ancestor_affine=False,
     torch.set_num_threads(4);torch.backends.cuda.matmul.allow_tf32=False
     model,call,context,_=load_case(family,dataset,index)
     allowed={int(v.untyped_storage()._cdata) for v in tree_flatten(
-        model._garda_inputs if family!='EmbodiedSplat' else model._garda_native[2])[0] if isinstance(v,torch.Tensor)}
+        model._gadra_inputs if family!='EmbodiedSplat' else model._gadra_native[2])[0] if isinstance(v,torch.Tensor)}
     official=None
     if family!='EmbodiedSplat':
         if family=='SceneSplat':

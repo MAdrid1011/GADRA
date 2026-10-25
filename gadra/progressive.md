@@ -3,7 +3,7 @@
 ## External Interface
 
 `progressive_projector()` and `ProgressiveHead` provide the causal channel-level
-numerical path whose operations can be captured by `garda.capture`.
+numerical path whose operations can be captured by `gadra.capture`.
 
 ## Internal Helpers
 

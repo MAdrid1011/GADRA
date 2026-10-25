@@ -160,11 +160,11 @@ def ancestor_projector(model,projection_dtype=torch.float32,tile_rows=8192,use_f
     def recover(self,point):
         if not projector.ancestor_affine.enabled:return original_recovery(point)
         point,banks=context_banks(point)
-        point['_garda_context_banks']=banks
+        point['_gadra_context_banks']=banks
         return point
     def project(self,point):
         if not self.ancestor_affine.enabled:return original_projector(point)
-        banks=point['_garda_context_banks']
+        banks=point['_gadra_context_banks']
         if stripe_columns is not None:
             from .ancestor_triton import merge_gelu
             affine=self.ancestor_affine
@@ -287,7 +287,7 @@ def benchmark_stripes(dataset,index,destination,widths,repeats=7,*,input_scope='
         model,call,context,entry=load_case('Chorus',dataset,index,input_scope=input_scope)
         text=texts(dataset).cuda()
         report=dict(model='Chorus',dataset=dataset,index=index,entry=entry,
-            input_metadata=model._garda_input_scope,status='common_engineering_candidate',
+            input_metadata=model._gadra_input_scope,status='common_engineering_candidate',
             scope='Complete native first-fragment 3D encoding, original/candidate alternating CUDA events',
             mechanism='Frozen ancestor affine formula and bounded channel projection; no A or coverage B',variants={})
         with context:

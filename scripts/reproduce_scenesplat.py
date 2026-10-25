@@ -11,8 +11,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from garda.experiment import run_case, run_case_parallel
-from garda.memory_core import COMPILED
+from gadra.experiment import run_case, run_case_parallel
+from gadra.memory_core import COMPILED
 
 
 DATASETS = ("scannet", "scannetpp", "matterport3d")

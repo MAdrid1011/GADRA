@@ -1,7 +1,7 @@
 # Workload Inputs
 
-GARDA publishes small manifests but not third-party repositories, licensed
-datasets, checkpoints, or multi-gigabyte captures. Set `GARDA_WORKLOADS_ROOT`
+GADRA publishes small manifests but not third-party repositories, licensed
+datasets, checkpoints, or multi-gigabyte captures. Set `GADRA_WORKLOADS_ROOT`
 to a prepared external tree, or place that tree at `local/workloads/`.
 
 ## External Tree

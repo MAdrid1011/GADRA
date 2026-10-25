@@ -116,7 +116,7 @@ def trace_type(family):
                     try:result=original(grid_coord,batch,depth,order)
                     finally:self.opaque-=1
                     self.record('geometry',[grid_coord,batch],[result],name='chorus.serialization',
-                        op='garda.serialized_encode',depth=depth,order=order,
+                        op='gadra.serialized_encode',depth=depth,order=order,
                         geometry_scalar_ops=len(grid_coord)*(11*depth+2+(22*depth+12 if order.startswith('hilbert') else 0)))
                     return result
                 structure.encode=encode
@@ -226,7 +226,7 @@ def trace_type(family):
                     finally:self.opaque-=1
                     with torch._C._DisableTorchDispatch():
                         self.record('aten',[mapping[None,:]],[payload],
-                            op='garda.unique_index',name='chorus.native_index_payload',
+                            op='gadra.unique_index',name='chorus.native_index_payload',
                             diagnostic_unique_native=mapping.detach().cpu().tolist(),
                             diagnostic_unique_rows=source_rows)
                     return payload,count
@@ -516,7 +516,7 @@ def dump_native_geometry(model,entry,destination,tag):
     if tag.startswith('EmbodiedSplat_'):
         source=WORKLOADS/'results/embodiedsplat_native_measurement/geometry'/f'{tag}.pt'
         support=torch.load(source,map_location='cpu',weights_only=False)
-        record=model._garda_native[0]
+        record=model._gadra_native[0]
         if not torch.equal(support['means'],record['coordinates']):
             raise ValueError('EmbodiedSplat support does not match the native encoded row order')
         if len(support['covariances'])!=len(record['coordinates']) or len(support['opacities'])!=len(record['coordinates']):
@@ -529,13 +529,13 @@ def dump_native_geometry(model,entry,destination,tag):
     from .workloads import select_fragment
     settings=json.loads((WORKLOADS/'results/scenesplat_fp16.json').read_text())['settings']
     physical=scene.prepare_scene(WORKLOADS/entry['local'],settings['seed'],clip_scale=False)
-    scope=model._garda_input_scope['input_scope']
+    scope=model._gadra_input_scope['input_scope']
     chunk,indices,_=select_fragment(scene,physical,settings,scope)
-    model_chunk=model._garda_chunk;model_indices=model._garda_fragment_indices
+    model_chunk=model._gadra_chunk;model_indices=model._gadra_fragment_indices
     if not np.array_equal(chunk['coord'][indices],model_chunk['coord'][model_indices]):
         raise ValueError('Physical Gaussian attributes do not match the encoded native row order')
     path=Path(destination)/f'{tag}_geometry.npz';path.parent.mkdir(parents=True,exist_ok=True)
-    np.savez_compressed(path,coord=model._garda_inputs['coord'].detach().cpu().numpy(),feat=chunk['feat'][indices])
+    np.savez_compressed(path,coord=model._gadra_inputs['coord'].detach().cpu().numpy(),feat=chunk['feat'][indices])
     return path
 
 
@@ -584,7 +584,7 @@ def capture_progressive(dataset,variant,query_proxy=False,destination='results/r
                 geometry_path=dump_native_geometry(model,entry,destination,f'Chorus_{dataset}_s0')
                 record=dump_trace(trace,result,destination,f'Chorus_{dataset}_s0',dict(
                     model='Chorus',dataset=dataset,index=0,entry=entry,variant=variant,query_proxy=query_proxy,parent_window=parent_window,
-                    input_metadata=model._garda_input_scope,geometry_file=geometry_path.name,
+                    input_metadata=model._gadra_input_scope,geometry_file=geometry_path.name,
                     geometry_scale='unclipped physical dataset scale',
                     predictor_policy=lut.config,
                     composition=composition,
@@ -661,7 +661,7 @@ def capture(family, dataset, index, destination, mixed_extended=False, wide_kern
     stem = {}
     if family == 'EmbodiedSplat':
         from measure_embodiedsplat_native import map_rows
-        record, coordinates, features, inverse = model._garda_native
+        record, coordinates, features, inverse = model._gadra_native
         gaussian_coords = coordinates[inverse].cpu().numpy().astype(np.int32)
         def capture_stem(m,a):
             out=a[0]
@@ -683,7 +683,7 @@ def capture(family, dataset, index, destination, mixed_extended=False, wide_kern
                     lambda m,a,o,name=name:checkpoint(m,a,o,name)))
         xyz = record['coordinates'].numpy()
     else:
-        inputs = model._garda_inputs
+        inputs = model._gadra_inputs
         xyz = inputs['coord'].cpu().numpy()
         for name, module in model.named_modules():
             if re.fullmatch(r'(backbone\.)?enc.enc[1-4]', name):
@@ -759,7 +759,7 @@ def capture(family, dataset, index, destination, mixed_extended=False, wide_kern
         for cp in checkpoints:
             level = int(re.search(r'(?:enc|dec)\d+', cp['name'])[0][-1])
             cp['mapping'] = leafmap[level]
-    input_metadata=getattr(model,'_garda_input_scope',dict(input_scope='native-cache'))
+    input_metadata=getattr(model,'_gadra_input_scope',dict(input_scope='native-cache'))
     candidate_metadata={}
     if tail_rank is not None:
         from .numerical import metrics

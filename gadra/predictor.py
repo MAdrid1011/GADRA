@@ -211,6 +211,7 @@ def feedback_gate_contexts(keys,values,response_edges,support,tolerance):
 
 
 def query_scores(observations):
+    """Return L2-normalized query scores and their pre-normalization norm."""
     score=observations.get('control_scores',observations['scores']).astype(np.float32)
     scale=np.maximum(np.linalg.norm(score,axis=2,keepdims=True),np.finfo(np.float32).tiny)
     return score/scale,scale
@@ -232,8 +233,8 @@ def state_features(observations,window,space='language',history_fp16=False):
     if space=='language':
         delta=observations['step_l1'].astype(np.float32)
     elif space=='query_scores':
-        # normalize(z @ text.T) == normalize(raw_readout @ text.T).
-        # Thus a continue observation need not materialize the language vector.
+        # z is the L2-normalized query-score vector. Its trajectory variation
+        # is the L1 distance between adjacent checkpoints.
         score,scale=query_scores(observations)
         delta=np.zeros(score.shape[:2],dtype=np.float32)
         previous=score[:-1].astype(np.float16).astype(np.float32) if history_fp16 else score[:-1]

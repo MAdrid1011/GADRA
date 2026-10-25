@@ -7,7 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKLOADS = Path(
-    os.environ.get("GARDA_WORKLOADS_ROOT", ROOT / "local" / "workloads")
+    os.environ.get("GADRA_WORKLOADS_ROOT", ROOT / "local" / "workloads")
 ).expanduser().resolve()
 sys.path.insert(0, str(WORKLOADS / 'scripts'))
 
@@ -50,7 +50,7 @@ def load_case(family, dataset, index, *, input_scope='chunk-first',role='evaluat
         # prepare() constructs exactly one collated scene. Rechecking this via
         # decomposed_features materializes unused indexed feature copies.
         model.memory._single_scene_prevalidated = True
-        model._garda_native = (record, coordinates, features, inverse)
+        model._gadra_native = (record, coordinates, features, inverse)
         return model, lambda: model(coordinates, features, inverse=inverse), nullcontext(), entry
     import scenesplat_runtime as scene
     import chorus_runtime as chorus
@@ -68,10 +68,10 @@ def load_case(family, dataset, index, *, input_scope='chunk-first',role='evaluat
         checkpoint = json.loads((WORKLOADS / 'results/chorus_assets.json').read_text())['model']['local']
         model = chorus.load_model(checkpoint, half=True)
         runtime, context = chorus, fused_serialization()
-    model._garda_inputs = inputs
-    model._garda_chunk = chunk
-    model._garda_fragment_indices = indices
-    model._garda_input_scope = scope
+    model._gadra_inputs = inputs
+    model._gadra_chunk = chunk
+    model._gadra_fragment_indices = indices
+    model._gadra_input_scope = scope
     return model, lambda: runtime.encode(model, inputs, settings['seed']), context, entry
 
 
@@ -84,7 +84,7 @@ def gpu_baseline(family, dataset, index, repeats, *, input_scope='chunk-first'):
     fcntl.flock(lock, fcntl.LOCK_EX)
     torch.set_num_threads(4)
     model, call, context, entry = load_case(family, dataset, index, input_scope=input_scope)
-    input_metadata = getattr(model, '_garda_input_scope', dict(input_scope='native-cache'))
+    input_metadata = getattr(model, '_gadra_input_scope', dict(input_scope='native-cache'))
     with torch.inference_mode(), context:
         for _ in range(2):
             reference = call()

@@ -423,8 +423,8 @@ class ProgressiveHead(nn.Module):
         return output[selected].half().float()@self.texts.T
 
     def forward(self,point):
-        banks=point['_garda_context_banks'];mapping=banks[self.context_level][1]
-        requested=point.get('_garda_output_demand')
+        banks=point['_gadra_context_banks'];mapping=banks[self.context_level][1]
+        requested=point.get('_gadra_output_demand')
         if requested is not None and (requested.dtype!=torch.bool or requested.shape!=mapping.shape
                                       or requested.device!=mapping.device):
             raise ValueError('Output demand must be a Boolean mask of the native row domain')
@@ -568,7 +568,7 @@ def progressive_projector(model,text,lut,shared_projection=False,**options):
     projector.progressive=ProgressiveHead(projector,text,lut,shared_projection,**options).eval()
     def recover(self,point):
         if not projector.progressive.enabled:return original_recovery(point)
-        point,banks=context_banks(point);point['_garda_context_banks']=banks
+        point,banks=context_banks(point);point['_gadra_context_banks']=banks
         if not shared_projection:point.feat=torch.cat([value[mapping] for value,mapping in banks],dim=1)
         return point
     def project(self,point):

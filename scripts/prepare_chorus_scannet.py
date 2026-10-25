@@ -10,9 +10,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from garda.capture import capture
-from garda.coverage import build_order
-from garda.workloads import gpu_baseline
+from gadra.capture import capture
+from gadra.coverage import build_order
+from gadra.workloads import gpu_baseline
 
 
 DATASETS = ("scannet", "scannetpp", "matterport3d")

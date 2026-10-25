@@ -1,1 +1,0 @@
-"""GARDA architecture simulator."""

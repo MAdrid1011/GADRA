@@ -1929,7 +1929,7 @@ class Simulator:
                 np.array_equal(live[i],live[i+1])):
                 original=self.g.events[i]
                 target=self.integer_mask_fusions[i]
-                fused=dict(original,outputs=[target],op='garda.bitwise_and_ne_fused',
+                fused=dict(original,outputs=[target],op='gadra.bitwise_and_ne_fused',
                            scalar_ops_per_row=2*target['shape'][-1],
                            integer_mask_fusion=True,
                            integer_mask_elided_bytes_per_row=(
