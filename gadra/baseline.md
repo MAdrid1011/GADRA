@@ -1,13 +1,10 @@
 # `baseline.py`
 
-## External Interface
+`from_orin_measurement()` validates actual AGX Orin CUDA-event samples and
+returns their median in milliseconds. `project()` is the compatibility-named
+loader used by graph replay. It matches the trace's scene, fragment, and row
+identity to the measured baseline. `reference_metadata()` accepts board-measured
+records with the `orin_cuda_events` method.
 
-`project()` produces the stage-wise AGX Orin reference baseline used by formal runs.
-Counter parsing and arithmetic classification functions support that report.
-
-## Internal Helpers
-
-Reference scenarios scale RTX CUDA-event timing using each stage's arithmetic,
-DRAM traffic, and configured RTX/Orin compute and bandwidth parameters.
-`reference_metadata()` accepts legacy reference labels and preserves the recorded
-timings, counter sources, and measurement metadata.
+The module also parses Nsight counter exports and classifies native arithmetic
+by precision. Power records retain their source rail and encoding interval.

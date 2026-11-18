@@ -8,3 +8,5 @@ contract, and the correspondence between the proposed mechanisms and code.
 - `workloads.md` defines the external asset and capture contract.
 - `mechanism-correspondence.md` maps A and B to implementation modules and
   reported evidence.
+
+- `evaluation.md` defines fixed splits, all-fragment aggregation, baseline provenance, and local outputs.

@@ -1,11 +1,5 @@
-# `prepare_embodiedsplat.py`
+# EmbodiedSplat prepare
 
-## External Interface
-
-Runs EmbodiedSplat on one or all three real datasets. `--dataset`, `--output`,
-and `--repeats` control selection, destination, and GPU timing repetitions.
-
-## Internal Helpers
-
-Each case captures the native-cache execution, semantic observations, geometry,
-coverage order, and GPU reference.
+This entrypoint uses the complete private study manifest described in
+[Experiment protocol](../docs/evaluation.md). Use `--manifest local/study.json`
+and `--help` to inspect its arguments. Generated artifacts remain local.

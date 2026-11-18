@@ -1,11 +1,5 @@
-# `prepare_chorus_scannet.py`
+# Chorus prepare
 
-## External Interface
-
-Runs Chorus on ScanNet, ScanNet++, and Matterport3D, writing real captures and
-GPU references to `local/captures/chorus` by default. `--output` and `--repeats`
-override destination and timing repetitions.
-
-## Internal Helpers
-
-The script derives coverage ordering after each official model capture.
+This entrypoint uses the complete private study manifest described in
+[Experiment protocol](../docs/evaluation.md). Use `--manifest local/study.json`
+and `--help` to inspect its arguments. Generated artifacts remain local.

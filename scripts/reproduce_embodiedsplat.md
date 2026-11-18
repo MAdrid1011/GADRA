@@ -1,12 +1,5 @@
-# `reproduce_embodiedsplat.py`
+# EmbodiedSplat reproduce
 
-## External Interface
-
-Replays EmbodiedSplat original base and `none/A/B/AB` for one or all real
-datasets, with explicit capture, configuration, output, worker, and reuse
-options.
-
-## Internal Helpers
-
-Summary generation reports finite resource bounds and rejects failed quality
-gates.
+This entrypoint uses the complete private study manifest described in
+[Experiment protocol](../docs/evaluation.md). Use `--manifest local/study.json`
+and `--help` to inspect its arguments. Generated artifacts remain local.

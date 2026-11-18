@@ -1,45 +1,40 @@
-# Workload Inputs
+# Workload inputs
 
-GADRA publishes small manifests but not third-party repositories, licensed
-datasets, checkpoints, or multi-gigabyte captures. Set `GADRA_WORKLOADS_ROOT`
-to a prepared external tree, or place that tree at `local/workloads/`.
-
-## External Tree
+The native adapters use official SceneSplat, Chorus, and EmbodiedSplat model
+repositories, checkpoints, datasets, and preprocessing. Set
+`GADRA_WORKLOADS_ROOT` to the prepared external tree:
 
 ```text
 local/workloads/
   repos/{SceneSplat,Chorus,EmbodiedSplat}/
   data/{scannet,scannetpp,matterport3d}/
   checkpoints/
-  results/{assets.json,chorus_assets.json,scenesplat_fp16.json,...}
   scripts/{scenesplat_runtime.py,chorus_runtime.py,...}
+  results/{assets.json,chorus_assets.json,scenesplat_fp16.json,...}
   build/minkowski_graph_backend/
 ```
 
-The runtime adapters resolve official model checkpoints and concrete dataset
-scenes from the asset metadata. SceneSplat and Chorus use the first deterministic
-spatial fragment selected from a real scene. EmbodiedSplat uses its first real
-native-cache scene. Calibration and evaluation roles are kept separate by the
-asset metadata.
+SceneSplat and Chorus use 1 cm presampling and 2 cm inference grids.
+EmbodiedSplat uses native 2 cm voxel/cache inputs. Native adapters expose scene
+identity and split, deterministic fragment enumeration, original position
+indices, ground-truth labels, model invocation, and pretrained semantic-head
+weights. Calibration, tuning, and evaluation roles resolve to independent
+source scene lists.
 
-## Capture Contract
+`prepare.py` visits every entry of the private study manifest. SceneSplat and
+Chorus select the specified fragment from the complete native scene partition.
+EmbodiedSplat visits the selected complete native-cache scene. The scene
+manifest covers every inference unit used by that model's original protocol.
+The low-level `chunk-first` adapter remains available for a quick local example.
+Formal evaluation validates complete scene coverage before replay.
 
-For each model/dataset pair, `local/captures/<model>/` contains:
+Each native capture writes operator/dependency metadata, integer maps,
+per-checkpoint observations, and Gaussian geometry under its unique fragment
+tag. Calibration feature capture additionally exports native stage features
+and corresponding full-depth fitting targets. Frozen readout identity is
+recorded in every diagnostic capture. Existing captures from another diagnostic
+definition require capture with the selected frozen maps before paper replay.
 
-- `<Model>_<dataset>_s0.json`: operator and dependency trace;
-- `_maps.pkl`: captured sparse maps used by semantic replay;
-- `_observations.npz`: real per-stage semantic observations;
-- `_geometry.npz`: real Gaussian geometry;
-- `_coverage.npz` and `_coverage.json`: coverage order and metadata;
-- `_gpu.json`: measured local-GPU timing and counter inputs for the Orin reference baseline.
-
-Replay rejects missing files and mismatched model or dataset identities. It
-does not generate random replacements or silently fall back to toy inputs.
-
-## Commands
-
-The manifests in `workloads/` name the capture script, replay script,
-configuration, external model repository, and dataset roots for each model.
-The root README gives the complete commands. Capture needs the CUDA environment
-that can run the upstream model; replay needs the package dependencies in
-`pyproject.toml` and the Numba-compiled simulator path.
+The [experiment protocol](evaluation.md) defines the private manifest, original
+position/label arrays, Orin timing records, and aggregation commands. Model
+assets and generated numerical records stay in ignored local directories.

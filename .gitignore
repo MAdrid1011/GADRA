@@ -19,3 +19,15 @@ results/
 # Local diagnostics
 *.log
 *.tmp
+
+# Private experiment inputs and generated numerical artifacts
+measurements/
+calibration/
+reports/
+*.npz
+*.npy
+*.pt
+*.pth
+*.pkl
+*.vcd
+*.fst

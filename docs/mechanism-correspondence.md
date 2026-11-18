@@ -1,37 +1,64 @@
-# Mechanism Correspondence
+# Mechanism correspondence
 
-| Mechanism | Implementation | Charged evidence |
-|---|---|---|
-| A: context-demand termination | `predictor.py`, `diagnostic_pipeline.py`, `checkpoint.py`, `readout.py` | Predictor tables, witnesses, response/correction records, diagnostic vector/matrix work, control-SRAM peak, removed matrix FLOPs, and quality gates |
-| B: workload-aware supply | `coverage.py`, `coverage_rows.py`, `feeder.py`, `wavefront.py`, `memory_core.py` | Real ellipsoid order, resident features, bounded feeder transfers, bank/queue service, finite array occupancy, DMA, and DRAM bytes |
-| Shared A/B path | `engine.py`, `experiment.py`, `vector_fusion.py` | Dependency-ready issue, shared scheduling, fused vector retirement, total cycles, same-resource controls, and resource-clipped composition target |
+## CDP
 
-## Variant Definitions
+At checkpoint d, CDP forms the fixed-query score vector q and normalizes it by
+its absolute sum, giving z = q / max(sum(abs(q)), smallest positive FP32 value).
+The two-checkpoint trajectory statistic is sum(abs(z[d] - z[d-1])). The score
+gap is the largest normalized score minus the second largest.
 
-`none` uses the optimized hardware resources with A and B disabled. `A` and
-`B` enable one mechanism at a time on that same resource baseline. `AB` enables
-both. `original base` uses the tracked single-`64x64` pre-adaptation
-configuration.
+The calibration target at checkpoint d is the sum of adjacent-checkpoint L1
+changes from d+1 through the final checkpoint. This includes later reversals,
+even when the final winning category equals the current winner. The same
+target defines the response of an already completed consumer.
 
-The common scheduling path is a prerequisite of both mechanisms. AB instantiates
-that path once, then applies A's termination decisions and B's supply policy on
-the same finite array, vector, SRAM, and DRAM resources.
+SceneSplat uses four encoder and three recovery checkpoints with 768-dimensional
+semantic readouts. Chorus uses five encoder checkpoints and 1152-dimensional
+readouts of the available multiscale features. EmbodiedSplat uses four encoder
+and four decoder checkpoints, mapping to its frozen 64-dimensional semantic
+head input and then to the original 768-dimensional semantic output. The final
+native output is also recorded as the reference endpoint. Original position
+maps align each readout to its Gaussian consumers.
 
-## Predictor Definition
+`prepare.fit_readouts()` fits affine least-squares diagnostic maps on the fixed
+calibration scenes while preserving backbone and native-head weights.
+`calibration.fit_tables()` pools up to 4096 positions per scene across its
+fragments, builds quartile bins, and stores the 95th percentile of remaining
+cumulative L1 change. Cells with fewer than 64 observations continue execution.
+Fitted artifacts remain local and are identified by hashes during capture and
+replay.
 
-At checkpoint $d$, A forms the query-score vector $q_{i,d}$ and stores
-$z_{i,d}=q_{i,d}/\max(\lVert q_{i,d}\rVert_2,\epsilon)$. Its trajectory signal
-is the windowed mean of $\lVert z_{i,t}-z_{i,t-1}\rVert_1$. Let
-$c_{i,d}=\arg\max_k q_{i,d,k}$ and let $D$ be the final checkpoint.
-Calibration and replay use
-$\max_k q_{i,D,k}-q_{i,D,c_{i,d}}$, the final-checkpoint disadvantage of the
-current winner, as the decision-aware remaining correction. Thus L2
-normalization, L1 trajectory variation, and final-score correction are
-distinct parts of one definition rather than competing normalization
-conventions.
+Completed response records match checkpoint, shared input, and current winning
+category. Up to four completed consumers per context provide records, with
+matching responses reduced by maximum. A matched conditional table combines
+variation, score gap, and response. A missing response uses the local table.
+The larger of the selected table output and applicable response is compared
+with the default termination threshold of 0.02. Only completed consumers supply
+future-response evidence. Their computation and response publication precede
+any decision that uses it.
 
-## Runtime Validation
+Output termination cancels later output work. Original dependency closure
+retains producers referenced by other active consumers. `predictor.py` models
+the decision, `diagnostic_pipeline.py` lowers its paid observation work, and
+`engine.py` issues the retained dependency tasks.
 
-Each run compares early outputs against full-depth inference and enforces the
-quality thresholds stored in the selected configuration. A failed gate aborts
-summary generation instead of silently accepting the variant.
+## CGR
+
+For Gaussian centers mu and three-axis scales s, the priority is
+`sum((mu_i-mu_j)^2) / (sum(s_i^2) + sum(s_j^2))`. Original convolution edges,
+attention membership, pooling maps, and recovery indices determine actual
+shared-input consumers. Scale-normalized distance determines their ordering.
+
+The scheduler advances input-ready groups that reuse resident fragments and
+need fewer additional inputs. Exact feature tags select the 64 physical
+128 B slots. Remaining consumers keep a fragment eligible for retention.
+Finished consumption releases its slot, and evicted live data retains its
+backing reference for subsequent access. CDP updates active consumers, while
+CGR manages their shared feature lifetimes.
+
+## Variants
+
+`none` disables CDP and CGR. `A` enables CDP, `B` enables CGR, and `AB` enables
+both on the same hardware profile. The default and base configuration files
+share the manuscript clock, array shape, and storage capacities. Generated
+records identify the exact source and configuration used for each run.

@@ -112,7 +112,7 @@ def reserve_copy_bank(bank,earliest,duration,state,calendar,lengths,destination=
 def masked_transfer(slot,mask,earliest,state,banks,calendar,lengths,bank_width,striped):
     """Transfer byte-enabled sectors under the selected physical bank layout.
 
-    Directory allocation remains 2 KiB. Layout 0 is slot-banked, 1 preserves
+    Directory allocation is 128 B. Layout 0 is slot-banked, 1 preserves
     legacy physical-sector striping, and 2 skews sectors by the slot number.
     All layouts use the same finite banks and transfer every enabled sector.
     """

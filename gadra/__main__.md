@@ -1,11 +1,10 @@
-# `__main__.py`
+# Command line
 
-## External Interface
+`python -m gadra config` validates and prints the manuscript resource profile.
+`python -m gadra prepare` extracts calibration features, fits frozen readouts,
+captures manifest fragments, or records Orin timing.
+`python -m gadra evaluate` runs all-fragment scene evaluation.
 
-`main()` implements `python -m gadra` and the installed `gadra-sim` command.
-It exposes low-level `baseline`, `capture`, and `simulate-case` operations.
-
-## Internal Helpers
-
-Subcommand imports are delayed so CPU replay does not require capture-only GPU
-dependencies.
+Use `--help` on each preparation/evaluation module or the model-specific scripts
+for argument details. The complete private manifest contract is documented in
+`docs/evaluation.md`.

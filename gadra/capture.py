@@ -514,7 +514,7 @@ def dump_trace(trace,result,destination,tag,metadata,checkpoints):
 def dump_native_geometry(model,entry,destination,tag):
     """Export actual unclipped Gaussian support in the encoded native order."""
     if tag.startswith('EmbodiedSplat_'):
-        source=WORKLOADS/'results/embodiedsplat_native_measurement/geometry'/f'{tag}.pt'
+        source=WORKLOADS/'results/embodiedsplat_native_measurement/geometry'/f"{tag.split('_f')[0]}.pt"
         support=torch.load(source,map_location='cpu',weights_only=False)
         record=model._gadra_native[0]
         if not torch.equal(support['means'],record['coordinates']):
@@ -530,7 +530,7 @@ def dump_native_geometry(model,entry,destination,tag):
     settings=json.loads((WORKLOADS/'results/scenesplat_fp16.json').read_text())['settings']
     physical=scene.prepare_scene(WORKLOADS/entry['local'],settings['seed'],clip_scale=False)
     scope=model._gadra_input_scope['input_scope']
-    chunk,indices,_=select_fragment(scene,physical,settings,scope)
+    chunk,indices,_=select_fragment(scene,physical,settings,scope,model._gadra_input_scope.get('fragment_index',0))
     model_chunk=model._gadra_chunk;model_indices=model._gadra_fragment_indices
     if not np.array_equal(chunk['coord'][indices],model_chunk['coord'][model_indices]):
         raise ValueError('Physical Gaussian attributes do not match the encoded native row order')
@@ -603,7 +603,7 @@ def capture_progressive(dataset,variant,query_proxy=False,destination='results/r
 
 @torch.inference_mode()
 def capture(family, dataset, index, destination, mixed_extended=False, wide_kernel=False,query_fp16=False,query_transposed=False,output_fp16=False,query_factorized=False,embodied_native_previous=False,terminal_latent_query=False,
-            *,input_scope='chunk-first',trace_only=False,ancestor_stripe_columns=None,ancestor_full=False,query_partitioned=False,output_partitioned=False,tail_rank=None,export_stage_vectors=False,chorus_readouts=None):
+            *,input_scope='chunk-first',trace_only=False,ancestor_stripe_columns=None,ancestor_full=False,query_partitioned=False,output_partitioned=False,tail_rank=None,export_stage_vectors=False,chorus_readouts=None,role='evaluation',fragment_index=None,scene_id=None,readout_manifest=None,features_only=False):
     if chorus_readouts is not None and (family!='Chorus' or trace_only):
         raise ValueError('Alternate Chorus readouts require a Chorus diagnostic capture')
     if input_scope=='scene-first' and not trace_only:
@@ -642,12 +642,12 @@ def capture(family, dataset, index, destination, mixed_extended=False, wide_kern
     Trace=trace_type(family)
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    tag = f'{family}_{dataset}_s{index}'
+    tag = f'{family}_{dataset}_s{index}'+(f'_f{fragment_index}' if fragment_index is not None else '')
     lock = (WORKLOADS / 'results/context_reload_v1/.gpu_counter.lock').open('w')
     fcntl.flock(lock, fcntl.LOCK_EX)
     torch.set_num_threads(4)
     torch.backends.cuda.matmul.allow_tf32 = False
-    model, call, context, entry = load_case(family, dataset, index, input_scope=input_scope)
+    model, call, context, entry = load_case(family, dataset, index, input_scope=input_scope,role=role,fragment_index=fragment_index or 0,scene_id=scene_id)
     official = None
     if family != 'EmbodiedSplat':
         from scenesplat_runtime import official_modules
@@ -793,9 +793,44 @@ def capture(family, dataset, index, destination, mixed_extended=False, wide_kern
         print(tag,'captured native execution',len(trace.events),'events',input_metadata,flush=True)
         fcntl.flock(lock,fcntl.LOCK_UN);lock.close()
         return record
+    paper_bundle=None
+    if features_only or readout_manifest is not None:
+        from .checkpoints import stage_indices
+        for j,cp in enumerate(checkpoints):
+            stage=cp['name'].rsplit('.block',1)[0] if family!='EmbodiedSplat' else cp['name'].rsplit('.',1)[0]
+            nxt=(checkpoints[j+1]['name'].rsplit('.block',1)[0] if family!='EmbodiedSplat'
+                 else checkpoints[j+1]['name'].rsplit('.',1)[0]) if j+1<len(checkpoints) else None
+            cp['stage_end']=stage!=nxt
+        checkpoints=[checkpoints[i] for i in stage_indices(family,checkpoints)]
+        if features_only:
+            arrays={'final':F.normalize(result.float(),dim=-1).cpu().numpy()}
+            for j,cp in enumerate(checkpoints):
+                arrays[f'features_{j}']=cp['value'].float().cpu().numpy()
+                arrays[f'mapping_{j}']=cp['mapping']
+            if family=='EmbodiedSplat':
+                native=torch.load(WORKLOADS/'results/embodiedsplat_native_measurement/diagnostics.pt',weights_only=False)[dataset]['three_d']['head']
+                current=checkpoints[-1]['value'].float()[torch.as_tensor(checkpoints[-1]['mapping'],device='cuda').long()]
+                arrays['teacher_latent']=(current@native['kernel'].cuda()).cpu().numpy()
+                for key in ('language_weight','language_bias'):arrays[key]=native[key].cpu().numpy()
+            np.savez_compressed(destination/f'{tag}_features.npz',**arrays)
+            (destination/f'{tag}_features.json').write_text(json.dumps(dict(model=family,dataset=dataset,
+                role=role,scene_id=scene_id,checkpoints=[c['name'] for c in checkpoints]),indent=2)+'\n')
+            fcntl.flock(lock,fcntl.LOCK_UN);lock.close()
+            return
+        bundle_meta=json.loads(Path(readout_manifest).read_text())
+        from .study import digest
+        weight_record=bundle_meta['artifacts'][0]
+        weight_path=Path(readout_manifest).parent/weight_record['path']
+        if digest(weight_path)!=weight_record['sha256']:raise ValueError('Frozen readout weights changed')
+        paper_bundle=dict(np.load(weight_path))
     # Frozen independent-scene alignment, charged as actual online diagnostic
     # transforms by the cycle model. No future model value enters a readout.
-    if family == 'SceneSplat':
+    if paper_bundle is not None:
+        if family=='SceneSplat':from profile_scenesplat import texts
+        elif family=='Chorus':from chorus_runtime import texts
+        else:texts=None
+        text=(texts(dataset).cuda() if texts else torch.load(WORKLOADS/'results/embodiedsplat_native_measurement/texts.pt',weights_only=False)[dataset]['features'].cuda())
+    elif family == 'SceneSplat':
         from profile_scenesplat import texts
         weights = torch.load(WORKLOADS/'results/readouts_aggregation_matched.pt', weights_only=False)['weights']
         weights.update(torch.load(WORKLOADS/'results/readouts_fine_decoder.pt', weights_only=False)['weights'])
@@ -829,7 +864,28 @@ def capture(family, dataset, index, destination, mixed_extended=False, wide_kern
         cp['readout_maps'] = [cp['mapping']]
         extra_flops = 0
         control=None
-        if family == 'SceneSplat':
+        if paper_bundle is not None:
+            w=torch.as_tensor(paper_bundle[f'weight_{j}'],device='cuda')
+            if family=='Chorus':
+                for earlier in checkpoints[:j]:
+                    cp['readout_inputs'].append(earlier['spec']);cp['readout_maps'].append(earlier['mapping'])
+                parts=[c['value'][torch.as_tensor(c['mapping'],device='cuda').long()] for c in checkpoints[:j]]+[x[mapping]]
+                source=F.normalize(torch.cat(parts,dim=1).float(),dim=1)
+            elif family=='SceneSplat':source=F.normalize(x[mapping],dim=1)
+            else:source=x[mapping]
+            projected=F.pad(source,(0,1),value=1)@w
+            if family=='EmbodiedSplat':
+                head_weight=torch.as_tensor(paper_bundle['language_weight'],device='cuda')
+                head_bias=torch.as_tensor(paper_bundle['language_bias'],device='cuda')
+                language=F.normalize(F.relu(projected)@head_weight+head_bias,dim=1)
+                extra_flops=2*64*language.shape[1];cp['paper_latent_affine']=True
+            else:
+                language=F.normalize(projected,dim=1)
+                from .readout import affine_recipe
+                cp['readout_recipe']=affine_recipe(family,len(cp['readout_inputs']))
+                checked=language
+            cp['readout_shape']=list(w.shape)
+        elif family == 'SceneSplat':
             key = f'b{j+1:02d}'
             if j == len(checkpoints)-1:
                 language = F.normalize(x,dim=1)[mapping]
@@ -1058,6 +1114,9 @@ def capture(family, dataset, index, destination, mixed_extended=False, wide_kern
         diagnostic_observations=True,geometry_file=geometry_path.name,
         geometry_scale='unclipped physical dataset scale',
         scope='Complete dynamic 3D semantic encoding')
+    if readout_manifest is not None:
+        from .study import digest
+        metadata.update(diagnostic_definition='l1-cumulative-v1',readout_manifest_sha256=digest(readout_manifest))
     metadata['diagnostic_query_fp16']=query_fp16
     metadata['diagnostic_factorized_query']=query_factorized
     metadata['embodied_native_previous']=embodied_native_previous

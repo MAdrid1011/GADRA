@@ -1,11 +1,5 @@
-# `prepare_scenesplat.py`
+# SceneSplat prepare
 
-## External Interface
-
-Runs SceneSplat on all three real datasets and writes capture bundles to
-`local/captures/scenesplat`. `--output` and `--repeats` are supported.
-
-## Internal Helpers
-
-Each official capture is followed by real-geometry coverage ordering and a GPU
-baseline measurement.
+This entrypoint uses the complete private study manifest described in
+[Experiment protocol](../docs/evaluation.md). Use `--manifest local/study.json`
+and `--help` to inspect its arguments. Generated artifacts remain local.

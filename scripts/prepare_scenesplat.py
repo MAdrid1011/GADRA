@@ -1,60 +1,8 @@
 #!/usr/bin/env python3
-"""Capture SceneSplat inputs and GPU references from three real datasets."""
-
-import argparse
-import json
-from pathlib import Path
+"""Prepare every fixed-manifest SceneSplat scene fragment."""
 import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from gadra.prepare import main
 
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from gadra.capture import capture
-from gadra.coverage import build_order
-from gadra.workloads import gpu_baseline
-
-
-DATASETS = ("scannet", "scannetpp", "matterport3d")
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--output", type=Path, default=ROOT / "local/captures/scenesplat"
-    )
-    parser.add_argument("--repeats", type=int, default=7)
-    args = parser.parse_args()
-    args.output.mkdir(parents=True, exist_ok=True)
-    config = json.loads((ROOT / "configs/scenesplat_scannet.json").read_text())
-
-    for dataset in DATASETS:
-        capture(
-            "SceneSplat",
-            dataset,
-            0,
-            args.output,
-            query_fp16=True,
-            query_transposed=True,
-            output_fp16=True,
-        )
-        tag = f"SceneSplat_{dataset}_s0"
-        _, metadata = build_order(
-            "SceneSplat",
-            dataset,
-            0,
-            config,
-            geometry_path=args.output / f"{tag}_geometry.npz",
-            archive_path=args.output / f"{tag}_coverage.npz",
-        )
-        (args.output / f"{tag}_coverage.json").write_text(
-            json.dumps(metadata, indent=2) + "\n"
-        )
-        reference = gpu_baseline("SceneSplat", dataset, 0, args.repeats)
-        (args.output / f"{tag}_gpu.json").write_text(
-            json.dumps(reference, indent=2) + "\n"
-        )
-
-
-if __name__ == "__main__":
-    main()
+if __name__=='__main__':main('SceneSplat')

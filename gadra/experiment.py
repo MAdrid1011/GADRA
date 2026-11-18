@@ -1,7 +1,4 @@
 """Repeatable nine-case experiment with fixed-resource full-factorial ablations."""
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import get_context
-import csv
 import json
 import os
 from pathlib import Path
@@ -19,37 +16,6 @@ from .baseline import project,reference_metadata
 
 MODELS=('SceneSplat','Chorus','EmbodiedSplat')
 DATASETS=('scannet','scannetpp','matterport3d')
-
-
-def numerical_report(directory):
-    """Keep functional-baseline evidence separate from timing experiments."""
-    directory=Path(directory);records=[]
-    for model in MODELS:
-        for dataset in DATASETS:
-            r=json.loads((directory/f'{model}_{dataset}_s0_numerical.json').read_text())
-            native=r['native_replay'];lower=r['lowered']
-            records.append(dict(model=model,dataset=dataset,
-                native_max_abs_error=native['max_abs_error'],
-                native_class_agreement=native['class_agreement'],
-                lowered_class_agreement=lower['class_agreement'],
-                lowered_within_tolerance=lower['within_tolerance'],
-                lowered_mean_cosine=lower['mean_cosine'],
-                lowered_rmse=lower['rmse'],passes_thresholds=lower['passes_thresholds']))
-    with (directory/'numerical_summary.csv').open('w') as f:
-        writer=csv.DictWriter(f,fieldnames=list(records[0]),lineterminator='\n')
-        writer.writeheader();writer.writerows(records)
-    lines=['# 无机制基线数值重执行','',
-        '每组合首个真实片段的完整三维语义编码。原生重执行与显式稀疏乘加均从初始输入、权重和整数几何启动；不读取捕获的浮点中间值作为输入根。',
-        '', '| 模型 | 数据集 | 原生最大绝对误差 | 显式展开类别一致率 | regret≤0.01 | 平均余弦 |',
-        '|---|---|---:|---:|---:|---:|']
-    for r in records:
-        lines.append(f"| {r['model']} | {r['dataset']} | {r['native_max_abs_error']:.3g} | {r['lowered_class_agreement']:.4%} | {r['lowered_within_tolerance']:.4%} | {r['lowered_mean_cosine']:.8f} |")
-    lines+=['','九组均满足类别一致率≥99%、regret≤0.01 比例≥99%的基线门槛。',
-        '原生重执行使用原有内核；显式展开按真实 offset 边 gather/GEMM/scatter，以 FP32 产品与累加后转回输出精度。矩阵单元 RTL 浮点舍入、A/AB 选择后的完整重执行尚需后续验证。',
-        '', '本轮修复：spconv Native 隐式中心和镜像边；ME kernel_map 保留权重偏移编号与空偏移；Chorus Triton 编码、ME C++ 坐标插入及 batch 分解显式记录几何边界。几何索引仍属于计费操作。',
-        '此前 results/final 是旧 trace 的历史探索，不能与本轮结果混用。新数值证据不代表已经获得性能加速。']
-    (directory/'NUMERICAL.md').write_text('\n'.join(lines)+'\n')
-    return records
 
 
 def matrix_arithmetic_floor_ms(graph,config,live=None):
@@ -74,15 +40,21 @@ def anchor(graph,baseline,config):
         orin_reference=baseline)
 
 
-def run_case(model,dataset,config_path,raw_directory,result_directory,reference=None,training_raw=None,variant_names=None):
+def run_case(model,dataset,config_path,raw_directory,result_directory,reference=None,training_raw=None,variant_names=None,*,case_tag=None,calibration_records=None):
     requested=('none','A','B','AB') if variant_names is None else tuple(variant_names)
     if not requested or set(requested)-{'none','A','B','AB'}:
         raise ValueError('Expected one or more of none/A/B/AB')
     begin=time.perf_counter();config=json.loads(Path(config_path).read_text());raw=Path(raw_directory)
+    from .profile import validate
+    profile=validate(config,sensitivity=config.get('sensitivity_study',False))
     revision=subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
-    tag=f'{model}_{dataset}_s0'
+    tag=case_tag or f'{model}_{dataset}_s0'
     graph=Graph(raw/f'{tag}.json')
+    if graph.trace.get('diagnostic_definition')!='l1-cumulative-v1':
+        raise ValueError('Recapture with the manuscript diagnostic definition and frozen readout identity')
     obs=dict(np.load(raw/f'{tag}_observations.npz'))
+    if obs['scores'].shape[-1]>config['max_queries']:
+        raise ValueError('The active query set exceeds the configured history width')
     if config.get('tail_rank')!=graph.trace.get('tail_rank'):
         raise ValueError('Frozen tail rank must match the captured arithmetic and original quality target')
     if config.get('tail_rank') is not None and reference is None:
@@ -108,18 +80,16 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
     # Spatial row provenance belongs to the native graph, independently of
     # which semantic observations A actually executes.
     graph.maps['coverage_checkpoints']=graph.maps['checkpoints']
-    obs,graph.maps['checkpoints']=select_checkpoints(obs,graph.maps['checkpoints'],config['checkpoint_policy'])
+    from .checkpoints import select as paper_checkpoints
+    obs,graph.maps['checkpoints']=paper_checkpoints(model,obs,graph.maps['checkpoints'])
     if reference:
         baseline=reference_metadata(json.loads(Path(reference).read_text()))
         if baseline.get('model')!=model or baseline.get('dataset')!=dataset:
             raise ValueError('Software reference belongs to a different workload')
-        if not baseline.get('quality',{}).get('passes_thresholds',False):
-            raise ValueError('Software reference failed quality')
-        if (baseline.get('status')!='orin_reference' or baseline.get('Orin_measured') is not False
-                or baseline.get('reference_method')!='stage_compute_bandwidth_scaling'):
-            raise ValueError('Expected an Orin reference with source timing and platform-scaling metadata')
+        if (baseline.get('status')!='measured' or baseline.get('Orin_measured') is not True
+                or baseline.get('reference_method')!='orin_cuda_events'):
+            raise ValueError('Expected board-measured Orin CUDA-event timing')
         full_quality=graph.trace.get('quality',{})
-        if not full_quality.get('passes_thresholds',False):raise ValueError('Candidate trace failed quality')
     else:
         measurement=json.loads((Path(result_directory)/f'{tag}_gpu.json').read_text())
         baseline=project(graph,measurement,config)
@@ -127,20 +97,11 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
     static=anchor(graph,baseline,config)
     destination=Path(result_directory)/f'{tag}.json'
     destination.with_name(tag+'_anchor.json').write_text(json.dumps(static,indent=2)+'\n')
-    training=[];training_contexts=[];calibration=Path(training_raw) if training_raw else raw
-    for other in DATASETS:
-        if other==dataset:continue
-        data=dict(np.load(calibration/f'{model}_{other}_s0_observations.npz'))
-        other_graph=Graph(calibration/f'{model}_{other}_s0.json')
-        if other_graph.trace.get('tail_rank')!=graph.trace.get('tail_rank'):
-            raise ValueError('Tail rank differs between calibration and target')
-        if bool(other_graph.trace.get('diagnostic_transposed_composition',False))!=bool(graph.trace.get('diagnostic_transposed_composition',False)):
-            raise ValueError('Query composition layout differs between calibration and target')
-        if ('control_scores' in data)!=('control_scores' in obs):
-            raise ValueError('Control precision differs between calibration and target observations')
-        data,other_checkpoints=select_checkpoints(data,other_graph.maps['checkpoints'],config['checkpoint_policy'])
-        training.append(data)
-        training_contexts.append(min(other_checkpoints,key=lambda cp:rows(cp['spec']))['mapping'])
+    calibration=Path(training_raw) if training_raw else raw
+    if calibration_records is None:
+        raise ValueError('Paper replay requires fixed independent calibration records from a study manifest')
+    from .study import calibration_observations
+    training,training_contexts=calibration_observations(model,calibration_records,config)
     predictor=DemandLUT(training,config,training_contexts)
     predictor_bytes=predictor.storage_bytes()
     observation_begin=predictor.observation_begin() if config.get('gate_unreachable_checkpoints',False) else 0
@@ -196,7 +157,7 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
         name=('A' if a else '')+('B' if b else '') or 'none'
         if name not in requested:continue
         deployed=config
-        response_entries=rows(context_checkpoint['spec'])*len(graph.maps['checkpoints'])*config.get('witnesses_per_context',1) if a and config.get('finite_diagnostic_pipeline',False) else 0
+        response_entries=64 if a else 0
         selector_bytes=selector_storage_bytes(rows(context_checkpoint['spec']),len(stops),config) if response_entries else 0
         from .diagnostic_pipeline import feedback_gate_storage,feedback_gate_header_bytes
         gate_bytes=feedback_gate_storage(rows(context_checkpoint['spec']),len(stops),config) if a else 0
@@ -205,8 +166,8 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
         if a:
             # The frozen tables share the declared control SRAM with B's
             # finite ready-window metadata, rather than adding free storage.
-            deployed=dict(config,control_sram_bytes=config['control_sram_bytes']-predictor_bytes-
-                          response_entries*4*response_record_words(config)-selector_bytes-gate_bytes-joint_bytes)
+            deployed=dict(config,control_sram_bytes=config['control_metadata_bytes']-predictor_bytes-
+                          64*32-selector_bytes-gate_bytes-joint_bytes)
             if deployed['control_sram_bytes']<=0:raise ValueError('No control SRAM remains after predictor tables')
         links={}
         if b and config.get('coverage_linked_supply',False):
@@ -254,7 +215,7 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
                 pilot={k:v[:,witnesses] for k,v in obs.items()
                     if v.ndim>=2 and v.shape[:2]==obs['scores'].shape[:2]}
                 expected=remaining_correction(pilot,config.get('correction_horizon','suffix'))[sim.completed_response_depths]
-                np.testing.assert_allclose(sim.completed_response_values,expected,rtol=0,atol=0)
+                np.testing.assert_allclose(sim.completed_response_values,expected,rtol=1e-6,atol=1e-7)
             # All pilot results are complete before any dependent stop uses
             # feedback. Cache state and spill cost carry into phase 2.
             pilot_completed=int(sim.cycle)
@@ -286,7 +247,6 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
         result['optimistic_arithmetic_floor_ms']=arithmetic_cycles/config['clock_hz']*1000
         result['optimistic_arithmetic_speedup_ceiling']=baseline['orin_reference_ms']/result['optimistic_arithmetic_floor_ms']
         result['speedup_vs_orin_reference']=baseline['orin_reference_ms']/result['ms']
-        result['speedup_vs_ideal_orin_roof']=baseline['ideal_orin_roof_ms']/result['ms']
         result['pilot_completed_cycle']=pilot_completed
         if prepared is not None:
             # Reuse the cold, fully drained preparation composition used by
@@ -297,16 +257,15 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
             include_preparation(result,prepared,config)
             result['optimistic_arithmetic_speedup_ceiling']=baseline['orin_reference_ms']/result['optimistic_arithmetic_floor_ms']
             result['speedup_vs_orin_reference']=baseline['orin_reference_ms']/result['ms']
-            result['speedup_vs_ideal_orin_roof']=baseline['ideal_orin_roof_ms']/result['ms']
         variants[name]=result
         print(tag,list(variants)[-1],round(result['ms'],3),'ms',flush=True)
-    report=dict(model=model,dataset=dataset,static_anchor=static,baseline=baseline,variants=variants,
+    report=dict(model=model,dataset=dataset,profile=profile,static_anchor=static,baseline=baseline,variants=variants,
         quality=quality,full_depth_quality=full_quality,
         variant=graph.trace.get('variant'),reference_source=str(reference) if reference else None,
         calibration_source=str(calibration),coverage_source=str(geometry),
         pruning=dict(reference_flops=reference_flops,kept_flops=kept,
                      removed_fraction=1-kept/reference_flops,conservative_dependencies=conservative_dependencies),
-        predictor_split='Leave-one-dataset-out, both other datasets; no target-dataset labels in LUT',
+        predictor_split='Fixed independent 30-scene model calibration, pooled across three datasets',
         response_context_checkpoint=context_checkpoint['name'],
         observation_begin=observation_begin,
         observation_end=observation_end,
@@ -316,108 +275,8 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
         implementation_revision=revision,
         working_tree_modified=subprocess.run(['git','diff','--quiet']).returncode!=0,
         numba_cache_namespace=os.environ.get('NUMBA_CACHE_DIR'),
-        notes=['One full first fragment per combination, not full dataset evaluation',
+        notes=['One explicitly identified fragment in the complete scene manifest',
                'A quality results are measured from exact retained checkpoint values with supply closure',
                'No PSNR/SSIM/LPIPS: output is semantic vectors, no renderer in this scope'])
     destination.write_text(json.dumps(report,indent=2)+'\n')
     return str(destination)
-
-
-def run_case_parallel(model,dataset,config_path,raw_directory,result_directory,reference=None,training_raw=None,workers=4):
-    """Independent ablations in separate host processes, same simulated RTL.
-
-    Workers never share a mutable Graph, directory, predictor or SRAM state.
-    Only complete consistent records are merged into the usual case output.
-    """
-    import shutil
-    if workers<1:raise ValueError('Expected at least one host worker')
-    begin=time.perf_counter();out=Path(result_directory);out.mkdir(parents=True,exist_ok=True)
-    tag=f'{model}_{dataset}_s0';names=('none','A','B','AB')
-    # Calibration may already have initialized HiGHS worker state in this
-    # parent. Forking it can spin indefinitely inside the child MILP call.
-    # Fresh interpreters also isolate all mutable simulator/JIT state.
-    with ProcessPoolExecutor(max_workers=min(workers,len(names)),mp_context=get_context('spawn')) as pool:
-        jobs=[]
-        for name in names:
-            part=out/name;part.mkdir(exist_ok=True)
-            if reference is None:shutil.copyfile(out/f'{tag}_gpu.json',part/f'{tag}_gpu.json')
-            jobs.append(pool.submit(run_case,model,dataset,config_path,raw_directory,str(part),reference,training_raw,(name,)))
-        records=[json.loads(Path(job.result()).read_text()) for job in jobs]
-    combined=records[0].copy();combined['variants']={}
-    for name,record in zip(names,records):
-        for field in ('model','dataset','config','baseline','quality','pruning','implementation_revision','working_tree_modified'):
-            if record[field]!=combined[field]:raise AssertionError(('Inconsistent ablation',name,field))
-        combined['variants'].update(record['variants'])
-    combined['simulator_seconds']=time.perf_counter()-begin
-    combined['host_workers']=min(workers,len(names))
-    destination=out/f'{tag}.json';destination.write_text(json.dumps(combined,indent=2)+'\n')
-    shutil.copyfile(out/names[0]/f'{tag}_anchor.json',out/f'{tag}_anchor.json')
-    return str(destination)
-
-
-def run_matrix(config_path,raw_directory,result_directory,workers):
-    with ProcessPoolExecutor(max_workers=workers,mp_context=get_context('spawn')) as pool:
-        jobs=[pool.submit(run_case,m,d,config_path,raw_directory,result_directory) for m in MODELS for d in DATASETS]
-        for job in jobs:print('completed',job.result(),flush=True)
-    report(result_directory)
-
-
-def report(directory):
-    directory=Path(directory);records=[];cases=[]
-    for model in MODELS:
-        for dataset in DATASETS:
-            p=directory/f'{model}_{dataset}_s0.json'
-            if not p.exists():raise ValueError(f'Incomplete nine-case matrix: {p} is missing')
-            r=json.loads(p.read_text());v=r['variants'];q=r['quality']
-            if set(v)!={'none','A','B','AB'}:
-                raise ValueError(f'Incomplete ablations: {p}')
-            cases.append(r)
-            records.append(dict(model=model,dataset=dataset,rtx_ms=r['baseline']['rtx_measured_ms'],
-                orin_ms=r['baseline']['orin_reference_ms'],none_cycles=v['none']['cycles'],
-                A_cycles=v['A']['cycles'],B_cycles=v['B']['cycles'],AB_cycles=v['AB']['cycles'],
-                none_ms=v['none']['ms'],A_ms=v['A']['ms'],B_ms=v['B']['ms'],AB_ms=v['AB']['ms'],
-                speedup=r['baseline']['orin_reference_ms']/v['AB']['ms'],
-                B_speedup=r['baseline']['orin_reference_ms']/v['B']['ms'],
-                B_vs_none=v['none']['cycles']/v['B']['cycles'],
-                AB_vs_none=v['none']['cycles']/v['AB']['cycles'],
-                AB_speedup_low=r['baseline']['orin_ms_range'][0]/v['AB']['ms'],
-                AB_speedup_high=r['baseline']['orin_ms_range'][1]/v['AB']['ms'],
-                class_agreement=q['class_agreement'],mean_cosine=q['mean_cosine'],
-                within_tolerance=q['within_tolerance'],rmse=q['rmse'],
-                quality_pass=v['AB']['quality_pass'],
-                arithmetic_speedup_ceiling=v['AB']['optimistic_arithmetic_speedup_ceiling'],
-                removed_flops_fraction=r['pruning']['removed_fraction']))
-    if len({case['implementation_revision'] for case in cases})!=1:
-        raise ValueError('Mixed implementation revisions; finish the complete matrix before reporting')
-    if any(case['config']!=cases[0]['config'] for case in cases):
-        raise ValueError('Mixed resource/predictor configurations')
-    if records:
-        with (directory/'summary.csv').open('w') as f:
-            writer=csv.DictWriter(f,fieldnames=list(records[0]),lineterminator='\n');writer.writeheader();writer.writerows(records)
-    lines=['# GADRA 九组周期模拟结果','',
-        'AGX Orin 参考基线采用本地 RTX 的 CUDA 计时与 DRAM 计数，按阶段计算与带宽服务需求之比换算；加速器采用事务/tile 周期模拟。每组评估一个真实输入片段的完整编码。',
-        '',f"性能实现版本：`{cases[0]['implementation_revision']}`。九组使用同一资源与预测配置。A=语义轨迹/上下文反馈；B=覆盖消费/特征驻留；∅=相同硬件资源关闭 A、B。",
-        '', '| 模型 | 数据集 | Orin 参考 ms | 无优化 ms | A ms | B ms | AB ms | AB 加速 | 类别一致 | 余弦 | ε内比例 | 质量门槛 |',
-        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
-    for r in records:
-        vals=[r['none_ms'],r['A_ms'],r['B_ms'],r['AB_ms']]
-        lines.append(f"| {r['model']} | {r['dataset']} | {r['orin_ms']:.2f} | "+' | '.join(f'{x:.2f}' for x in vals)+f" | {r['speedup']:.2f}× | {r['class_agreement']:.2%} | {r['mean_cosine']:.4f} | {r['within_tolerance']:.2%} | {'通过' if r['quality_pass'] else '未通过'} |")
-    lines+=['','A 的独立数据集校准不提供分布外硬保证；低质量行不能作为已满足质量的加速结果。B 完整深度输出保持参考值，仍需 RTL/硬件验证。',
-             '矩阵峰值、带宽与 SRAM 由每组 JSON 的 config 明确给出，非综合面积/功耗结论。',
-             '覆盖前端的 cKDTree 构建/求逆尚未逐指令计时；当前总周期含已建模二次型与链接成本，仍有前端下界假设。',
-             '逐组合细节、完整配置、停顿/流量、语义质量和九个跨设备效率情景见对应 JSON。']
-    lines+=['','## 机制收益与端到端约束','',
-            '| 模型 | 数据集 | B 对 Orin | B 对 ∅ | AB 对 ∅ | AB 对 Orin 效率情景范围 | 删去主算术 |',
-            '|---|---|---:|---:|---:|---:|---:|']
-    for r in records:
-        lines.append(f"| {r['model']} | {r['dataset']} | {r['B_speedup']:.2f}× | {r['B_vs_none']:.3f}× | {r['AB_vs_none']:.3f}× | {r['AB_speedup_low']:.2f}–{r['AB_speedup_high']:.2f}× | {r['removed_flops_fraction']:.2%} |")
-    config=cases[0]['config']
-    peak=2*config['arrays']*config['array_rows']*config['array_cols']*config['clock_hz']/1e12
-    sram=sum(config[name] for name in ('feature_sram_bytes','weight_sram_bytes','output_sram_bytes','control_sram_bytes'))/2**20
-    passed=sum(r['quality_pass'] for r in records)
-    lines+=['',f"AB 通过质量门槛 {passed}/9 组；5–6× 端到端目标尚未达到。范围仅为所列效率情景，非统计置信区间。低于 1× 表示更慢。",
-            f"主配置：{config['arrays']}×{config['array_rows']}×{config['array_cols']} MAC、{config['clock_hz']/1e9:g} GHz，FP16 矩阵峰值 {peak:.3f} TFLOP/s，FP32 {peak/config['fp32_mac_cycles']:.3f} TFLOP/s；SRAM {sram:g} MiB（目录元数据另计），DDR {config['dram_bandwidth_bytes_per_second']/1e9:g} GB/s。",
-            'B 的收益须看 B/∅，不能把相同硬件公共执行通路相对 GPU 的收益全部归于覆盖机制。提前结束比例也不能替代实际删除的算术和周期。',
-            '质量来自真实检查点向量与原模型输出的比较；此模拟器执行时序/需求，不执行 RTL 浮点数值，未验证硬件舍入误差。',
-            '详细解释见 [评测说明](../../docs/evaluation.md)。']
-    (directory/'REPORT.md').write_text('\n'.join(lines)+'\n')

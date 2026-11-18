@@ -1,13 +1,10 @@
 # `workloads.py`
 
-## External Interface
+The adapters select real model inputs and preserve native preprocessing.
+`select_fragment()` selects an explicit fragment from the complete scene
+partition. `load_case()` resolves independent calibration, tuning, and test
+source roles. The legacy `chunk-first` scope supports a small local example.
 
-`load_case()` loads one official model/dataset input, `gpu_baseline()` measures
-it, and `select_fragment()` applies the deterministic real-fragment policy.
-
-`GADRA_WORKLOADS_ROOT` overrides the default `local/workloads` asset root.
-
-## Internal Helpers
-
-Adapters import the prepared external runtime modules without copying
-third-party code into this repository.
+`gpu_baseline()` runs on AGX Orin, warms up native encoding, and records raw
+CUDA-event samples and input identity. Formal evaluation uses the complete
+scene manifest in `study.py`.

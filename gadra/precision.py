@@ -256,7 +256,7 @@ def project(trace_path,timing_path,counter_path,counter_metadata,configuration,d
     from pathlib import Path
     from statistics import median
     from .graph import Graph
-    from .baseline import arithmetic_by_precision,read_kernel_counters,project_mixed
+    from .baseline import from_orin_measurement
 
     graph=Graph(trace_path);timing=json.loads(Path(timing_path).read_text())
     counters=json.loads(Path(counter_metadata).read_text());meta=graph.trace
@@ -266,8 +266,7 @@ def project(trace_path,timing_path,counter_path,counter_metadata,configuration,d
         if not source['quality']['passes_thresholds']:raise ValueError('Software candidate failed quality')
     if not meta['quality']['passes_thresholds']:raise ValueError('Captured software failed quality')
     config=json.loads(Path(configuration).read_text())
-    result=project_mixed(arithmetic_by_precision(graph),read_kernel_counters(counter_path),
-                         median(s['gpu_ms'] for s in timing['samples']),config,counter_path)
+    result=from_orin_measurement(timing,model=meta['model'],dataset=meta['dataset'])
     result.update(model=meta['model'],dataset=meta['dataset'],variant=meta['variant'],
                   quality=timing['quality'],trace_source=str(trace_path),timing_source=str(timing_path),
                   counter_metadata_source=str(counter_metadata),

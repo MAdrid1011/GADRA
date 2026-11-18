@@ -240,9 +240,9 @@ class Program:
         self.event([source,broadcast],out,'aten.sub.Tensor')
         return (out,mean) if return_mean else out
 
-    def normalize(self,source):
+    def normalize(self,source,order=2):
         norm=self.tensor((rows(source),1))
-        self.event([source],norm,'aten.linalg_vector_norm.default',scalar_ops_per_row=2*source['shape'][-1])
+        self.event([source],norm,'aten.linalg_vector_norm.default',norm_order=order,scalar_ops_per_row=2*source['shape'][-1])
         norm=self.unary(norm,op='aten.clamp_min.default')
         broadcast=dict(norm,shape=list(source['shape']),stride=[1,0],contiguous=False)
         out=self.tensor(source['shape'])
@@ -609,6 +609,13 @@ class Program:
 
 def readout(p,cp,representatives):
     """Captured recipe, shared by control, output and completed feedback."""
+    if cp.get('paper_latent_affine',False):
+        source=p.gather(cp['readout_inputs'][0],np.asarray(cp['readout_maps'][0])[representatives])
+        source=p.pad(source,cp['readout_shape'][0])
+        affine=p.tensor(tuple(cp['readout_shape']),role='weight',asset='latent_affine')
+        latent=p.unary(p.linear(source,affine),op='aten.relu.default')
+        weight=p.tensor((65,cp['semantic_width']),role='weight',asset='language_weight')
+        return latent,weight,65
     if cp.get('terminal_latent_query',False):
         if len(cp['readout_inputs'])!=1 or len(cp['readout_maps'])!=1:
             raise ValueError('Terminal latent query requires one native source map')
@@ -801,7 +808,7 @@ def row_window_size(sim,classes):
         for cp in checkpoints:
             widths.extend([cp['semantic_width'],*cp['readout_shape'][:1]])
         width=max(widths)*4
-    rows_=min(sim.output_budget()//width,sim.c['queue_entries']*sim.c['array_rows'])
+    rows_=min(sim.output_budget()//width,sim.c.get('history_active_positions',64),sim.c['queue_entries']*sim.c['array_rows'])
     if rows_<1:raise ValueError('A diagnostic row does not fit the output owner')
     if rows_>=sim.c['array_rows']:rows_=rows_//sim.c['array_rows']*sim.c['array_rows']
     return rows_
@@ -1010,6 +1017,8 @@ def select_witnesses(sim,witnesses):
     clear=math.ceil(size/(4*ports))
     sim.cycle=max(sim.cycle,sim.memory.clock)+clear
     sim.stats['control_sram_write_bytes']+=size
+    if c.get('profile')=='paper-v1':
+        sim.cycle=max(sim.cycle,sim.memory.response_access(np.arange(count*slots),write=True,ready=sim.cycle))
     mappings(sim,2*len(contexts))
     service=0
     for begin in range(0,len(contexts),ports):
@@ -1055,7 +1064,7 @@ def complete_feedback(sim,observations,witnesses):
     begin=sim.g.maps.get('observation_begin',0);checkpoints=sim.g.maps['checkpoints']
     selected=np.flatnonzero(witnesses);count=len(selected);classes=observations['scores'].shape[-1]
     horizon=sim.c.get('correction_horizon','suffix')
-    if horizon not in ('suffix','final'):raise ValueError(horizon)
+    if horizon not in ('suffix','final','cumulative_l1'):raise ValueError(horizon)
     observed=list(range(begin,len(checkpoints)))
     if sim.c.get('diagnostic_feedback_actions_only',False):
         action=sim.c.get('predictor_first_exit')
@@ -1064,7 +1073,7 @@ def complete_feedback(sim,observations,witnesses):
                 not begin<=action<len(checkpoints)-1):
             raise ValueError('Action-only pilot feedback requires a gated single final-horizon action')
         observed=[action,len(checkpoints)-1]
-    start=sim.cycle;prior=None;numeric_winners=[];numeric_response=[]
+    start=sim.cycle;prior=None;numeric_winners=[];numeric_response=[];previous_scores=None
     for depth in observed:
         if not count:break
         cp=checkpoints[depth];p=Program(sim,depth)
@@ -1072,15 +1081,20 @@ def complete_feedback(sim,observations,witnesses):
         semantic=language(p,source,weight,inner)
         text=p.text(cp['semantic_width'],classes)
         score=p.linear(semantic,text)
-        peak=p.tensor((count,2))
-        p.event([score],peak,'aten.mul.Tensor',scalar_ops_per_row=2*(classes-1))
-        width=math.ceil(2*(len(numeric_winners)+1)*4/SECTOR_BYTES)*SECTOR_BYTES//4
-        state=p.tensor((count,width))
-        inputs=[score,peak]+([] if prior is None else [p.refer(prior)])
-        # Per historical winner: index/AGU, select score, subtract peak,
-        # compare and max. Insert current winner and zero initial correction.
-        update=len(numeric_winners) if horizon=='suffix' or depth==len(checkpoints)-1 else 0
-        p.event(inputs,state,'aten.mul.Tensor',scalar_ops_per_row=5*update+2)
+        if horizon=='cumulative_l1':
+            score=p.normalize(score,order=1)
+            state=p.tensor((count,classes+len(numeric_winners)+1))
+            sim.memory.register_history(state['address'],state['bytes'])
+            inputs=[score]+([] if prior is None else [p.refer(prior)])
+            p.event(inputs,state,'aten.mul.Tensor',scalar_ops_per_row=3*classes+len(numeric_winners))
+        else:
+            peak=p.tensor((count,2))
+            p.event([score],peak,'aten.mul.Tensor',scalar_ops_per_row=2*(classes-1))
+            width=math.ceil(2*(len(numeric_winners)+1)*4/SECTOR_BYTES)*SECTOR_BYTES//4
+            state=p.tensor((count,width))
+            inputs=[score,peak]+([] if prior is None else [p.refer(prior)])
+            update=len(numeric_winners) if horizon=='suffix' or depth==len(checkpoints)-1 else 0
+            p.event(inputs,state,'aten.mul.Tensor',scalar_ops_per_row=5*update+2)
         before=sim.memory.counts.copy();flops=sim.stats['matrix_flops'];vectors=sim.stats['vector_cycles']
         mappings(sim,count*max(1,len(cp['readout_maps'])))
         p.run([state])
@@ -1096,10 +1110,17 @@ def complete_feedback(sim,observations,witnesses):
         # Numerical companion uses the captured FP32 scores of completed
         # pilots only. It checks the response algorithm, not matrix RTL.
         scores=observations['scores'][depth,selected].astype(np.float32)
-        for i,winner in enumerate(numeric_winners):
-            if horizon=='suffix' or depth==len(checkpoints)-1:
-                correction=scores.max(1)-scores[np.arange(count),winner]
-                numeric_response[i]=np.maximum(numeric_response[i],correction)
+        if horizon=='cumulative_l1':
+            scores/=np.maximum(np.abs(scores).sum(1,keepdims=True),np.finfo(np.float32).tiny)
+            if previous_scores is not None:
+                delta=np.abs(scores-previous_scores).sum(1)
+                numeric_response=[r+delta for r in numeric_response]
+            previous_scores=scores
+        else:
+            for i,winner in enumerate(numeric_winners):
+                if horizon=='suffix' or depth==len(checkpoints)-1:
+                    correction=scores.max(1)-scores[np.arange(count),winner]
+                    numeric_response[i]=np.maximum(numeric_response[i],correction)
         numeric_winners.append(observations['winner'][depth,selected])
         numeric_response.append(np.zeros(count,np.float32))
     # Banks store one value/valid pair per (context, checkpoint). Initialization
@@ -1129,6 +1150,7 @@ def complete_feedback(sim,observations,witnesses):
     table_cycles=0
     for depth in observed[:-1]:
         keys=(contexts*len(checkpoints)+depth)*slots+slot_ids
+        if sim.c.get('profile')=='paper-v1':sim.cycle=max(sim.cycle,sim.memory.response_access(keys,write=True,ready=sim.cycle))
         # Each bank services 32 bits/cycle. A value/valid row needs two
         # read beats and two write beats; vector comparison is charged below.
         if fields==2 and slots==1:
@@ -1292,7 +1314,7 @@ def joint_decision(p,observations,stops,control,query,query_rows,lut_keys):
     if not hasattr(sim,'joint_scores_ready'):raise ValueError('Joint owner scores are unpublished')
     keys,values,group=sim.completed_response_records
     score=observations.get('control_scores',observations['scores'])[depth,control].astype(np.float32)
-    score/=np.maximum(np.linalg.norm(score,axis=1,keepdims=True),np.finfo(np.float32).tiny)
+    score/=np.maximum(np.abs(score).sum(axis=1,keepdims=True),np.finfo(np.float32).tiny)
     match=keys[depth,group[control]]==score.argmax(1)[:,None]
     local=np.where(match,values[depth,group[control]],-np.inf)
     maximum=local.max(1)
@@ -1448,6 +1470,7 @@ def execute(sim,observations,stops,witnesses,depths,phase):
                     p.g.events[-2]['inputs']=[route]
                     p.g.events[-2]['op']='aten.mul.Tensor'
             updated=p.tensor((len(control),updated_width))
+            if sim.c.get('profile')=='paper-v1':sim.memory.register_history(updated['address'],updated['bytes'])
             if terminal_state:
                 sim.stats['diagnostic_terminal_state_rows']+=len(control)
                 sim.stats['diagnostic_terminal_history_elided_bytes']+=len(control)*(statewidth-updated_width)*4
@@ -1574,6 +1597,8 @@ def execute(sim,observations,stops,witnesses,depths,phase):
             contexts=np.asarray(context['mapping'])[control] if context is not None else control
             ports=sim.c['cam_lookups_per_cycle']
             response_keys=contexts*len(sim.g.maps['checkpoints'])+depth
+            if sim.c.get('profile')=='paper-v1':
+                sim.cycle=max(sim.cycle,sim.memory.response_access((response_keys[:,None]*slots+np.arange(slots)).ravel(),ready=sim.cycle))
             if hasattr(sim,'predictor_edges'):
                 from .predictor import demand_features
                 if not hasattr(sim,'diagnostic_features'):
@@ -1603,7 +1628,7 @@ def execute(sim,observations,stops,witnesses,depths,phase):
                     local=values[depth,group[control]].copy()
                     if matched:
                         score=observations.get('control_scores',observations['scores'])[depth,control].astype(np.float32)
-                        score/=np.maximum(np.linalg.norm(score,axis=1,keepdims=True),np.finfo(np.float32).tiny)
+                        score/=np.maximum(np.abs(score).sum(axis=1,keepdims=True),np.finfo(np.float32).tiny)
                         current=score.argmax(1)
                         local=np.where(keys[depth,group[control]]==current[:,None],local,-np.inf)
                     response=local.max(1)

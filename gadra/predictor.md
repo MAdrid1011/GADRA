@@ -1,16 +1,16 @@
 # `predictor.py`
 
-## External Interface
+`DemandLUT` calibrates and queries CDP's frozen quartile tables. The `paper-v1`
+path uses `calibration.fit_tables()` on the independent calibration scenes.
 
-`DemandLUT` calibrates causal exit actions. Selection, response, witness,
-storage, feature, and correction helpers implement A's policy and accounting.
+`query_scores()` L1-normalizes each checkpoint's query scores.
+`state_features()` computes adjacent-checkpoint L1 variation and the normalized
+candidate-score gap. `remaining_correction(..., 'cumulative_l1')` sums all
+subsequent adjacent-checkpoint L1 changes. The same definition supplies the
+response of an already completed consumer.
 
-`query_scores()` L2-normalizes each checkpoint's query-score vector.
-`state_features()` computes the windowed L1 variation between adjacent
-normalized vectors, while `remaining_correction()` measures the decision-aware
-disadvantage, at the final checkpoint, of the current checkpoint's winner.
-
-## Internal Helpers
-
-Exact error-budget selection uses only completed observations and fixed quality
-limits.
+Completed responses match checkpoint, original shared context, and winning
+category. Up to four applicable records reduce by maximum. Missing feedback
+uses the local table. `decide()` compares the larger of the selected table
+prediction and applicable response against the configured threshold. Output
+quality is evaluated separately from the causal decision.

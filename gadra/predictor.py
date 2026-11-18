@@ -137,6 +137,7 @@ def selector_storage_bytes(context_rows,leaf_rows,config):
     """Counts, ranks, retained owner IDs and leaf exclusion bitmap."""
     slots=config.get('witnesses_per_context',1)
     if not uses_witness_selector(config):return 0
+    if config.get('profile')=='paper-v1':return 64*32
     owner_bytes=selector_owner_bytes(leaf_rows)
     owner_words=(context_rows*slots*owner_bytes+3)//4
     return context_rows*8+owner_words*4+4*((leaf_rows+31)//32)
@@ -211,9 +212,9 @@ def feedback_gate_contexts(keys,values,response_edges,support,tolerance):
 
 
 def query_scores(observations):
-    """Return L2-normalized query scores and their pre-normalization norm."""
+    """Return L1-normalized query scores and their absolute-sum scale."""
     score=observations.get('control_scores',observations['scores']).astype(np.float32)
-    scale=np.maximum(np.linalg.norm(score,axis=2,keepdims=True),np.finfo(np.float32).tiny)
+    scale=np.maximum(np.abs(score).sum(axis=2,keepdims=True),np.finfo(np.float32).tiny)
     return score/scale,scale
 
 
@@ -233,7 +234,7 @@ def state_features(observations,window,space='language',history_fp16=False):
     if space=='language':
         delta=observations['step_l1'].astype(np.float32)
     elif space=='query_scores':
-        # z is the L2-normalized query-score vector. Its trajectory variation
+        # z is the L1-normalized query-score vector. Its trajectory variation
         # is the L1 distance between adjacent checkpoints.
         score,scale=query_scores(observations)
         delta=np.zeros(score.shape[:2],dtype=np.float32)
@@ -419,6 +420,12 @@ class DemandLUT:
 
     def __init__(self,training,config,training_contexts=None):
         self.config=config
+        if config.get('profile')=='paper-v1':
+            from .calibration import fit_tables
+            self.edges,self.table,self.response_edges,self.response_table=fit_tables(training,training_contexts,config)
+            if self.storage_bytes()>config['control_metadata_bytes']:
+                raise ValueError('Frozen CDP tables exceed the 16 KiB control metadata budget')
+            return
         if config.get('predictor_margin_trend_preserve_gate',False) and not config.get('predictor_margin_trend',False):
             raise ValueError('Preserving response support requires margin trend')
         if config.get('predictor_margin_trend',False) and not (
@@ -746,7 +753,7 @@ class DemandLUT:
                      rmse=float(np.sqrt(output_metric('squared_error').mean())),
                      mean_final_score_regret=float(regret.mean()),
                      max_final_score_regret=float(regret.max()),
-                     within_tolerance=float((regret<=config['semantic_tolerance']).mean()),
+                     within_tolerance=float((regret<=config.get('quality_regret_tolerance',config['semantic_tolerance'])).mean()),
                      exited_fraction=float((stop<depth_count-1).mean()),
                      mean_completed_checkpoints=float((stop+1).mean()),
                      witnesses=int(witnesses.sum()),feedback_updates=feedback_count,
@@ -756,14 +763,18 @@ class DemandLUT:
 
 
 def remaining_correction(observations,horizon='suffix'):
-    """Calibration/finished-pilot label: future advantage over current winner.
+    """Future cumulative L1 variation for calibration and completed consumers.
 
-    The query scores are normalized language cosines. This measures a repair
-    that can change the semantic decision, rather than a harmless common score
-    translation. The optional final horizon calibrates the output endpoint,
-    while suffix also penalizes every transient intermediate winner. Inference
-    never evaluates either label for unfinished consumers.
+    The manuscript path uses cumulative_l1. Legacy final/suffix score-regret
+    helpers remain available for archived experiments, not paper configurations.
     """
+    if horizon=='cumulative_l1':
+        score=query_scores(observations)[0]
+        delta=np.zeros(score.shape[:2],dtype=np.float32)
+        delta[1:]=np.abs(score[1:]-score[:-1]).sum(2)
+        # At checkpoint d, sum only changes introduced after d.
+        suffix=np.cumsum(delta[:0:-1],axis=0,dtype=np.float32)[::-1]
+        return np.concatenate([suffix,np.zeros((1,score.shape[1]),np.float32)],axis=0)
     score=observations['scores'].astype(np.float32)
     winner=observations['winner']
     peak=score.max(2)

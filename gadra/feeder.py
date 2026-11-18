@@ -94,7 +94,9 @@ def operand_capacity(config,element_bytes):
                 config['array_cols']*config['k_tile']*storage_bytes,input_latch_bytes(config))):
             raise ValueError('Streamed operand and accumulator regions require complete physical bank rows')
     latch_charge=input_latch_bytes(config) if config.get('input_latch_budget','output')=='output' else 0
-    remaining=config['output_sram_bytes']-reserved-latch_charge
+    output_pool=config['output_sram_bytes']+config.get('accumulator_register_bytes',0)
+    remaining=output_pool-reserved-latch_charge
+    if config.get('profile')=='paper-v1':remaining=min(remaining,config['accumulator_register_bytes'])
     if remaining<=0:raise ValueError('Operand slots exhaust output SRAM')
     return slots,size,remaining//config['output_buffers']
 

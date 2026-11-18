@@ -1,11 +1,10 @@
 # `coverage.py`
 
-## External Interface
+`geometry()` loads captured native Gaussian centers and covariance.
+`build_order()` forms bounded candidate priorities using squared center
+distance divided by the sum of squared Gaussian scales, then exports a
+traversal for dependency-ready grouping.
 
-`geometry()` loads real Gaussian support and `build_order()` emits the B
-coverage order plus its metadata archive.
-
-## Internal Helpers
-
-KD-tree candidates are checked using the captured ellipsoid geometry before an
-ordering edge is accepted.
+The original graph determines actual shared inputs. Priority ordering does not
+replace convolution, attention, pooling, or recovery dependencies. Group
+construction and associated index traffic are included by the replay engine.

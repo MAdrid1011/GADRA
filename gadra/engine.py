@@ -131,6 +131,21 @@ class Memory:
         self.priorities=core.new_directory()
         self.stats=Counter()
         self.burst_cycles=math.ceil(DMA_BURST_BYTES*config['clock_hz']*DRAM_TIME_TICKS/config['dram_bandwidth_bytes_per_second'])
+        self.history_ranges=[]
+        self.history_store=None
+        self.response_store=None
+        if config.get('profile')=='paper-v1':
+            from .state_memory import StateStore
+            self.history_store=StateStore(self,64,1024,'history')
+            self.response_store=StateStore(self,64,32,'response')
+
+    def register_history(self,address,nbytes):
+        self.history_ranges.append((address//SECTOR_BYTES,math.ceil((address+nbytes)/SECTOR_BYTES)))
+
+    def response_access(self,keys,*,write=False,ready=0):
+        if self.response_store is None:return max(self.clock,ready)
+        return self.response_store.access(np.asarray(keys,dtype=np.int64),write=write,ready=ready)
+
 
     @property
     def clock(self):return int(self.state[0])
@@ -161,6 +176,14 @@ class Memory:
     def access(self,sectors,weight=False,write=False,ready=0,prefetch=False,copy_sink=None):
         """Lookup/fill now; ready gates a producer write or consumer read."""
         if not len(sectors):return self.clock
+        if self.history_store is not None and self.history_ranges and not weight:
+            history=np.zeros(len(sectors),bool)
+            for begin,end in self.history_ranges:history|=(sectors>=begin)&(sectors<end)
+            if history.any():
+                done=self.history_store.access(sectors[history],write=write,ready=ready)
+                if (~history).any():
+                    done=max(done,self.access(sectors[~history],weight=weight,write=write,ready=ready,prefetch=prefetch,copy_sink=copy_sink))
+                return done
         blocks=sectors//SLOT_SECTORS
         tags=np.unique(blocks).astype(np.int64)
         masks=np.zeros(len(tags),dtype=np.uint64)
@@ -185,6 +208,8 @@ class Memory:
                 self.burst_cycles,self.c['dram_latency_cycles'],self.sector_bytes,
                 banks,calendar,lengths,self.c['bank_bytes_per_cycle'],self.bank_layouts[which],
                 None if self.directory_counts is None else self.directory_counts[which],self.dma_activity)))
+        for store in (self.history_store,self.response_store):
+            if store is not None:ready=max(ready,store.finish(ready))
         self.update_stats()
         return ready
 
@@ -201,6 +226,7 @@ class Memory:
 
     def discard(self,sectors,hold_until):
         if not len(sectors):return 0
+        if self.history_store is not None:self.history_store.discard(sectors)
         tags=np.unique(sectors//SLOT_SECTORS).astype(np.int64);masks=np.zeros(len(tags),dtype=np.uint64)
         np.bitwise_or.at(masks,np.searchsorted(tags,sectors//SLOT_SECTORS),np.left_shift(np.uint64(1),(sectors%SLOT_SECTORS).astype(np.uint64)))
         return int(self.core.discard(tags,masks,self.directories[0],self.slots[0],hold_until))
@@ -1127,6 +1153,7 @@ class Simulator:
         """
         from .predictor import response_record_words
         fields=response_record_words(self.c)
+        if self.c.get('profile')=='paper-v1':entries=min(entries,64)
         words=entries*fields;cost=fields*math.ceil(entries/self.c['cam_lookups_per_cycle'])
         self.cycle=max(self.cycle,self.memory.clock)+cost
         self.memory.clock=self.cycle

@@ -1,6 +1,6 @@
 [project]
 name = "gadra-gs-simulator"
-version = "0.1.0"
+version = "0.2.0"
 description = "GADRA real-workload transaction and tile cycle simulator"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "numba>=0.61"]
