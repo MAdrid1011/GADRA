@@ -39,6 +39,7 @@ class CoverageRows:
                 np.any(np.diff(offsets)>link_limit)):
                 raise ValueError('Coverage links require bounded CSR in the real leaf domain')
         self.views={};self.orders={};self.scalar_ops=0;self.metadata_bytes=0
+        self.metadata_read_bytes=0;self.metadata_write_bytes=0
         self.layout_domain_reuse=layout_domain_reuse
         # Compiler identities, not an on-chip associative cache. A retained
         # mapping reference prevents Python object-ID reuse. Only existing
@@ -59,6 +60,12 @@ class CoverageRows:
             self.reverse()
             self.forward()
             if sum(map(len,self.views.values()))==count:break
+
+    def account(self,*,reads=0,writes=0,operations=0):
+        self.metadata_read_bytes+=reads
+        self.metadata_write_bytes+=writes
+        self.metadata_bytes+=reads+writes
+        self.scalar_ops+=operations
 
     @staticmethod
     def row_local(event):
@@ -277,8 +284,8 @@ class CoverageRows:
             self.orders[signature]=candidate
             # Each new feature view still reads its complete off-chip order
             # and its own binding; only duplicate construction is removed.
-            self.metadata_bytes+=candidate.nbytes+LAYOUT_BINDING_BYTES
-            self.scalar_ops+=LAYOUT_BINDING_OPS
+            self.account(reads=candidate.nbytes,writes=LAYOUT_BINDING_BYTES,
+                         operations=LAYOUT_BINDING_OPS)
             self.layout_domain_reuses+=1
             return candidate
         ordered=mapping[self.order];ordered=ordered[ordered>=0]
@@ -295,13 +302,12 @@ class CoverageRows:
         # Build/read lifted scheduling metadata, separately from the existing
         # geometry cost. Sorting is conservatively a compare/move program;
         # native mapping values do not constitute a free hardware permutation.
-        self.scalar_ops+=len(mapping)+2*len(ordered)*math.ceil(math.log2(max(2,len(ordered))))
-        self.metadata_bytes+=mapping.nbytes+candidate.nbytes
+        self.account(reads=mapping.nbytes,writes=candidate.nbytes,
+            operations=len(mapping)+2*len(ordered)*math.ceil(math.log2(max(2,len(ordered)))))
         if self.layout_domain_reuse:
             candidate.setflags(write=False)
             self.layout_domains[domain]=(mapping,candidate)
-            self.metadata_bytes+=LAYOUT_BINDING_BYTES
-            self.scalar_ops+=LAYOUT_BINDING_OPS
+            self.account(writes=LAYOUT_BINDING_BYTES,operations=LAYOUT_BINDING_OPS)
         return candidate
 
     def neighbors(self,spec,selected,*,deduplicate=True):
@@ -344,8 +350,7 @@ class CoverageRows:
                 proof,adjacency=self.native_link_domains[domain]
                 if proof is not mapping:raise AssertionError('Reused compiler mapping identity')
                 self.native_links[signature]=adjacency
-                self.metadata_bytes+=LAYOUT_BINDING_BYTES
-                self.scalar_ops+=LAYOUT_BINDING_OPS
+                self.account(writes=LAYOUT_BINDING_BYTES,operations=LAYOUT_BINDING_OPS)
                 self.native_link_domain_reuses+=1
                 # Query-time offset and neighbor DMA below remains per view.
                 # A geometry binding cannot qualify actual feature sharing.
@@ -375,12 +380,11 @@ class CoverageRows:
         adjacency=(native_offsets,native_neighbors)
         self.native_links[signature]=adjacency
         # Count gather, filter, sorted dedup/cap and CSR construction.
-        self.scalar_ops+=len(mapping)+len(neighbors)*4+len(pairs)*2
-        self.scalar_ops+=2*int(valid.sum())*math.ceil(math.log2(max(2,int(valid.sum()))))
-        self.metadata_bytes+=mapping.nbytes+offsets.nbytes+neighbors.nbytes
-        self.metadata_bytes+=native_offsets.nbytes+native_neighbors.nbytes
+        self.account(reads=mapping.nbytes+offsets.nbytes+neighbors.nbytes,
+            writes=native_offsets.nbytes+native_neighbors.nbytes,
+            operations=(len(mapping)+len(neighbors)*4+len(pairs)*2+
+                2*int(valid.sum())*math.ceil(math.log2(max(2,int(valid.sum()))))))
         if self.link_domain_reuse:
             native_offsets.setflags(write=False);native_neighbors.setflags(write=False)
             self.native_link_domains[domain]=(mapping,adjacency)
-            self.metadata_bytes+=LAYOUT_BINDING_BYTES
-            self.scalar_ops+=LAYOUT_BINDING_OPS
+            self.account(writes=LAYOUT_BINDING_BYTES,operations=LAYOUT_BINDING_OPS)

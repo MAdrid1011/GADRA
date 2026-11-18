@@ -145,6 +145,7 @@ def unique_index(sim,event,selected,earliest):
         if sim.vector_queue.reserve(begin,ready-begin,begin)!=ready:
             raise AssertionError('Native metadata program lost its vector owner')
     sim.vector=max(sim.vector,ready)
+    sim.record_scalar_interval(begin,ready,operator='diagnostic_unique_metadata')
     if sim.activity is not None:sim.activity.add_vector(begin,ready)
     sim.stats['vector_cycles']+=int(work)
     sim.stats['diagnostic_unique_programs']+=1
@@ -556,7 +557,7 @@ class Program:
         if parent.c.get('diagnostic_window_overlap',False):c['event_local_completion']=True
         child=type(parent)(g,c)
         child.allocate_workspace=parent.allocate_workspace
-        for field in ('memory','matrix','buffer_ready','feeder_ready','feeder_b_ready','input_latches','copy_ready','copy_descriptor_queue','copy_source_order','vector_queue','activity','diagnostic_source_ready'):
+        for field in ('memory','matrix','buffer_ready','feeder_ready','feeder_b_ready','input_latches','copy_ready','copy_descriptor_queue','copy_source_order','vector_queue','activity','diagnostic_source_ready','audit_events'):
             setattr(child,field,getattr(parent,field))
         child.cycle=parent.cycle;child.vector=parent.vector
         child.diagnostic_cast_ready=parent.diagnostic_cast_ready
@@ -886,8 +887,7 @@ def initialize_feedback_gate(sim,witnesses):
     # array. At most32 contexts' finite owner sets occupy existing input lanes;
     # narrow synthetic configurations subdivide them further. Clear the word,
     # read/evaluate each subpacket, then OR/write this word before proceeding.
-    packet=min(32,c['vector_lanes']//(slots*fields))
-    if packet<1:raise ValueError('A complete owner set must fit the existing vector input lanes')
+    packet=max(1,min(32,c['vector_lanes']//(slots*fields)))
     for first in range(0,count,32):
         local=actual[(actual>=first)&(actual<first+32)]
         sim.cycle+=1
@@ -1109,7 +1109,9 @@ def complete_feedback(sim,observations,witnesses):
         if depth<len(checkpoints)-1:sim.stats['diagnostic_leaf_observations']+=count
         # Numerical companion uses the captured FP32 scores of completed
         # pilots only. It checks the response algorithm, not matrix RTL.
-        scores=observations['scores'][depth,selected].astype(np.float32)
+        source=(observations.get('control_scores',observations['scores'])
+                if horizon=='cumulative_l1' else observations['scores'])
+        scores=source[depth,selected].astype(np.float32)
         if horizon=='cumulative_l1':
             scores/=np.maximum(np.abs(scores).sum(1,keepdims=True),np.finfo(np.float32).tiny)
             if previous_scores is not None:
@@ -1121,7 +1123,8 @@ def complete_feedback(sim,observations,witnesses):
                 if horizon=='suffix' or depth==len(checkpoints)-1:
                     correction=scores.max(1)-scores[np.arange(count),winner]
                     numeric_response[i]=np.maximum(numeric_response[i],correction)
-        numeric_winners.append(observations['winner'][depth,selected])
+        numeric_winners.append(scores.argmax(1) if horizon=='cumulative_l1'
+                               else observations['winner'][depth,selected])
         numeric_response.append(np.zeros(count,np.float32))
     # Banks store one value/valid pair per (context, checkpoint). Initialization
     # and capacity reservation happened before any B metadata was admitted.
@@ -1601,10 +1604,25 @@ def execute(sim,observations,stops,witnesses,depths,phase):
                 sim.cycle=max(sim.cycle,sim.memory.response_access((response_keys[:,None]*slots+np.arange(slots)).ravel(),ready=sim.cycle))
             if hasattr(sim,'predictor_edges'):
                 from .predictor import demand_features
-                if not hasattr(sim,'diagnostic_features'):
-                    sim.diagnostic_features=demand_features(observations,sim.c)
-                tv,margin=sim.diagnostic_features;te,me=sim.predictor_edges[depth]
-                lut_keys=np.searchsorted(te,tv[depth,control])*sim.c['predictor_bins']+np.searchsorted(me,margin[depth,control])
+                current=getattr(sim,'online_lookup',None)
+                if current is not None:
+                    current_depth,current_ids,current_tv,current_gap=current
+                    if current_depth!=depth:
+                        raise ValueError('The diagnostic lookup has another committed checkpoint')
+                    positions_in_current=np.searchsorted(current_ids,control)
+                    if (np.any(positions_in_current>=len(current_ids)) or
+                        not np.array_equal(current_ids[positions_in_current],control)):
+                        raise ValueError('The lookup requests an unobserved position')
+                    local_tv=current_tv[positions_in_current]
+                    local_margin=current_gap[positions_in_current]
+                else:
+                    if not hasattr(sim,'diagnostic_features'):
+                        sim.diagnostic_features=demand_features(observations,sim.c)
+                    tv,margin=sim.diagnostic_features
+                    local_tv=tv[depth,control]
+                    local_margin=margin[depth,control]
+                te,me=sim.predictor_edges[depth]
+                lut_keys=np.searchsorted(te,local_tv)*sim.c['predictor_bins']+np.searchsorted(me,local_margin)
                 if motion:lut_keys+=sim.diagnostic_boundary_motion[control]*sim.c['predictor_bins']**2
             else:
                 # Synthetic microcode tests have no calibrated LUT. Conservatively

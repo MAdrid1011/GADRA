@@ -19,10 +19,14 @@ Each fragment entry supplies `dataset`, `role`, `scene_id`, `source_split`
 `fragment_index`, `fragment_count`, `tag`, and `raw` capture directory.
 Its tag is `<Model>_<dataset>_s<source_index>_f<fragment_index>`.
 The entry also supplies paths to `readout_manifest`, `orin_timing`,
-`scene_indices`, and `scene_labels`. Paths resolve relative to the manifest.
-`scene_indices` maps output rows to original scene positions. `scene_labels`
-contains original ground-truth labels. Both are exported from the native
-preprocessing protocol and stored as local NumPy arrays.
+`scene_indices`, and `scene_labels`. Paper aggregation also supplies
+`implementation_contract` and `rtl_trace`, described in
+[Implementation comparison](implementation.md). Paths resolve relative to the
+manifest. A `.npy` `scene_indices` maps output rows to original scene positions.
+For voxel-to-original backprojection, a `.npz` instead stores `vertex_ids` and
+`prediction_rows`, mapping each original position to its native output row.
+`scene_labels` contains original ground-truth labels. These inputs come from
+the native preprocessing protocol and remain local.
 
 `study.records()` checks split independence, scene counts, unique fragments,
 and complete fragment-index coverage for each scene. Every evaluated scene
@@ -64,6 +68,9 @@ interval. `study.energy_efficiency()` checks these fields before calculation.
 ## Scene-level quality and performance
 
 `evaluate` traverses all test fragments and runs `none`, `A`, `B`, and `AB`.
+Each CDP run commits decisions checkpoint by checkpoint, records native task
+admissions, and retains all issued work. Its decision file is hashed, and
+scene aggregation reads that same file rather than recomputing exit depths.
 It merges raw semantic query scores through original position indices, sums
 scores from overlapping fragments, and makes one prediction per original
 scene position. It checks that every labeled position has at least one
@@ -76,6 +83,11 @@ fragment milliseconds and simulated cycles over the same scenes. GADRA time is
 `cycles / frequency_hz * 1000`, and speedup is actual Orin milliseconds divided
 by that time. Source revision and configuration hashes accompany the absolute
 cycle, timing, and traffic records.
+
+The default aggregation validates a supplied paired implementation record for
+each fragment. `--model-only` performs architectural exploration and marks its
+records `architectural_model_only`; it does not report an implementation
+match. This flag does not change the online policy or resource capacities.
 
 All generated measurements, calibration artifacts, predictions, and summaries
 remain under `local/` or `results/`, which Git ignores. The repository publishes

@@ -10,3 +10,4 @@ contract, and the correspondence between the proposed mechanisms and code.
   reported evidence.
 
 - `evaluation.md` defines fixed splits, all-fragment aggregation, baseline provenance, and local outputs.
+- `implementation.md` defines private resource bindings and paired execution records.

@@ -22,6 +22,14 @@ formal replay, and each generated run records its configuration fingerprint.
 | DRAM transaction | 64 B |
 | DRAM bandwidth and request latency | 204.8 GB/s, 180 ns |
 
+The scalar configuration is one FP MAC, one iterative FP unit, and one
+sequencer. `vector_lanes = 1` specifies serialized scalar microprogram work.
+These resources are independent of the 64 × 64 MAC array. Matrix work and
+scalar work therefore do not borrow capacity from each other. All scalar
+reservations, including compound metadata programs and their memory waits,
+occupy the same bounded ready queue. Arithmetic work cycles and reserved
+intervals are recorded separately: an interval may also include waiting time.
+
 `protocol.py` defines the executed 128 B allocation and 64 B transfer granules.
 Feature capacity is `min(cam_entries, feature_sram_bytes / 128)`, giving exactly
 64 resident slots at the default setting. Hit masks, dirty masks, fills,
@@ -54,3 +62,11 @@ fragment identity, actual Orin milliseconds, simulated cycles, frequency, and
 DRAM bytes. PPA comes from the physical implementation flow described in the
 manuscript. The Python replay engine supplies architectural timing and traffic
 accounting.
+
+Scalar microprogram steps are an architectural work model. A physical timing
+comparison additionally needs the implementation's operator mapping and a
+paired execution record. `implementation.py` checks source hashes, resource
+counts, scalar reservations, task admissions, decisions, cancellations, and
+total cycles before paper aggregation. The mapping must include the iterative
+operations used by the native graph; the model does not establish their
+physical latency by declaring a lane count.

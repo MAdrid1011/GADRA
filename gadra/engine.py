@@ -622,6 +622,9 @@ class Simulator:
         self.memory=Memory(config,coverage)
         self.matrix=np.zeros(config['arrays'],dtype=np.int64)
         self.vector=0;self.cycle=0;self.stats=Counter();self.stages=Counter()
+        self.audit_events=[]
+        self.audit_domain='native' if hasattr(graph,'trace') else 'diagnostic'
+        self.vector_operator='scalar_microprogram'
         if self.coverage_link_state_bytes:
             self.stats['coverage_link_bitmap_bytes']=self.coverage_link_state_bytes
         from .ready_queue import ReadyQueue
@@ -761,8 +764,18 @@ class Simulator:
         from .activity import Activity
         self.activity=Activity(config['arrays']) if config.get('observe_execution_intervals',False) else None
 
-    def issue_vector(self,earliest,duration):
+    def record_scalar_interval(self,begin,end,*,operator=None):
+        """Record ownership, including compound programs' memory-wait intervals."""
+        if end>begin:
+            self.audit_events.append(dict(kind='scalar_issue',
+                operator=operator or self.vector_operator,domain=self.audit_domain,
+                begin=int(begin),end=int(end),
+                resource='independent_scalar_sequencer'))
+
+    def issue_vector(self,earliest,duration,*,operator=None):
         """Return this program's completion, separately from the unit horizon."""
+        if self.c.get('profile')=='paper-v1' and self.c.get('vector_lanes')!=1:
+            raise ValueError('The declared scalar unit cannot supply parallel vector lanes')
         earliest=max(earliest,self.diagnostic_cast_ready)
         if not self.c.get('vector_ready_queue',False):
             done=max(self.vector,earliest)+duration
@@ -772,6 +785,7 @@ class Simulator:
             # new program. Older reservations continue to own their intervals.
             self.memory.clock=max(self.memory.clock,self.vector_queue.floor)
         self.vector=max(self.vector,done)
+        self.record_scalar_interval(done-duration,done,operator=operator)
         if self.activity is not None:self.activity.add_vector(done-duration,done)
         return done
 
@@ -985,6 +999,7 @@ class Simulator:
             end=self.vector_queue.reserve(begun,ready-begun,begun)
             if end!=ready:raise AssertionError('Compound vector program missed its exclusive interval')
         self.vector=max(self.vector,ready);self.stats['vector_cycles']+=int(vector_cycles)
+        self.record_scalar_interval(begun,ready,operator='inverse_row_metadata')
         if self.activity is not None:self.activity.add_vector(begun,ready)
         sectors=np.arange(plan['base']//SECTOR_BYTES,math.ceil((plan['base']+plan['bytes'])/SECTOR_BYTES))
         ready=m.access(sectors,write=True,ready=ready)
@@ -1021,6 +1036,27 @@ class Simulator:
         self.stats['gather_demand_control_read_bytes']+=len(selected)*8
         self.stats['gather_demand_control_write_bytes']+=words*4+len(selected)*4
 
+    def pay_coverage_metadata(self):
+        """Complete new lifted-map work before a consumer may use its result."""
+        if self.coverage_rows is None:return
+        now=(self.coverage_rows.scalar_ops,self.coverage_rows.metadata_read_bytes,
+             self.coverage_rows.metadata_write_bytes)
+        old=getattr(self,'coverage_metadata_paid',(0,0,0))
+        operations,reads,writes=(int(a-b) for a,b in zip(now,old))
+        if min(operations,reads,writes)<0:raise ValueError('Coverage work counters decreased')
+        if not (operations or reads or writes):return
+        m=self.memory;begin=max(self.cycle,m.clock);ready=begin
+        for write,nbytes in ((False,reads),(True,writes)):
+            for _ in range(math.ceil(nbytes/DMA_BURST_BYTES)):
+                ready=max(ready,int(m.core.transaction(ready,write,m.state,m.pending,m.counts,
+                    m.burst_cycles,self.c['dram_latency_cycles'],DMA_BURST_BYTES,m.dma_activity)))
+        ready=self.issue_vector(ready,operations,operator='coverage_lift_preparation')
+        self.stats['vector_cycles']+=operations
+        self.stats['coverage_row_preparation_cycles']+=ready-begin
+        self.stats['coverage_preparation_cycles']+=ready-begin
+        self.cycle=max(self.cycle,ready);m.clock=max(m.clock,self.cycle)
+        self.coverage_metadata_paid=now
+
     def row_order(self,event_index,selected):
         if not self.coverage_phase_active or self.order is None:return selected
         if self.a and self.c.get('joint_compact_row_order',False):return selected
@@ -1030,6 +1066,7 @@ class Simulator:
         n=rows(e['outputs'][0])
         if self.coverage_rows is not None:
             candidate=self.coverage_rows.layout(e['outputs'][0])
+            self.pay_coverage_metadata()
             self.stats['coverage_proven_views']=len(self.coverage_rows.orders)
         else:
             if n not in self.tile_orders:
@@ -1090,7 +1127,7 @@ class Simulator:
             chunk=min(self.c.get('coverage_preparation_chunk_cycles',256),total-scheduled)
             if not isinstance(chunk,int) or isinstance(chunk,bool) or chunk<1:
                 raise ValueError('Coverage preparation chunks must be positive integer cycles')
-            done=self.issue_vector(self.cycle,chunk)
+            done=self.issue_vector(self.cycle,chunk,operator='coverage_preparation')
             self.coverage_preparation_vector_ready=max(
                 self.coverage_preparation_vector_ready,done)
             scheduled+=chunk
@@ -1616,6 +1653,7 @@ class Simulator:
                     else:
                         neighbors,nbytes,bursts=self.coverage_rows.neighbors(self.g.events[index]['outputs'][0],ids,
                             deduplicate=not self.c.get('coverage_link_incremental_pairs',False))
+                    self.pay_coverage_metadata()
                     query_work=self.coverage_rows.query_work-query_work
                     if query_work.any():
                         # Offset DMA addresses depend on selected->token
@@ -2196,7 +2234,7 @@ class Simulator:
         sectors,masks=self.g.write_masks(spec,selected)
         return self.store_sectors(sectors,masks,ready)
 
-    def execute(self,live,control=None):
+    def execute(self,live,control=None,*,start=0,end=None,observe_checkpoints=True):
         self.coverage_phase_active=(self.b and not (
             self.a and control is not None and control[3]=='pilot' and
             self.c.get('coverage_bypass_pilot',False)))
@@ -2226,7 +2264,8 @@ class Simulator:
         fork_join_charged=False
         async_begin=self.g.maps.get('diagnostic_async_begin',len(self.g.events))
         async_floor=None
-        for index,event,selected,last_chunk in self.schedule(live,control):
+        for index,event,selected,last_chunk in self.schedule(live,control,start=start,end=end):
+            self.vector_operator=event.get('op') or event['kind']
             if event['kind']=='sdpa' and self.attention_staging_storage_bytes:
                 from .attention import reset_staging
                 reset_staging(self)
@@ -2269,7 +2308,7 @@ class Simulator:
                     if not self.c.get('event_local_completion',False):
                         self.cycle=max(self.cycle,self.stats['last_tile_completion'],int(max(self.matrix)),self.vector)
                     self.memory.clock=max(self.memory.clock,self.cycle)
-                if last_chunk:self.observe(index,control)
+                if last_chunk and observe_checkpoints:self.observe(index,control)
                 self.checkpoint_fork.join(self,index,last_chunk)
                 continue
             if event.get('writeback_cast_join',False):
@@ -2402,6 +2441,10 @@ class Simulator:
                     for queue,available in zip(self.attention_queues,self.matrix):
                         queue.floor=int(available);queue.horizon=int(available)
             for ids in ([selected] if sparse_column_feeder or dense_outer_feeder or external_integer else self.groups(index,selected,bm)):
+                if len(ids):
+                    self.audit_events.append(dict(kind=self.audit_domain+'_issue',
+                        event=int(index),positions=np.asarray(ids,dtype=np.int64).tolist(),
+                        cycle=int(max(self.cycle,self.memory.clock))))
                 if event['kind']=='sdpa' and self.c.get('finite_operand_feeder',False) and len(np.unique(ids//out['shape'][-2]))!=1:
                     raise ValueError('A finite attention window may not span multiple heads/patches')
                 # Finite queue: no unbounded hidden buffer of prefetched tasks.
@@ -2782,7 +2825,7 @@ class Simulator:
                     statistics=dict(self.stats-before_stats)))
             if index in self.diagnostic_producers:
                 self.diagnostic_completions[index]=max(self.diagnostic_completions.get(index,0),event_completed)
-            if last_chunk:self.observe(index,control)
+            if last_chunk and observe_checkpoints:self.observe(index,control)
         if control is not None and control[3]=='pilot':
             self.pilot_main_completed_cycle=self.cycle
         if self.checkpoint_fork.current is not None:raise ValueError('Unfinished checkpoint descriptor')
@@ -2957,8 +3000,7 @@ class Simulator:
             self.cycle=max(self.cycle,self.coverage_preparation_ready)
             self.memory.clock=max(self.memory.clock,self.cycle)
         if self.coverage_rows is not None:
-            cost=math.ceil(self.coverage_rows.scalar_ops/self.c['vector_lanes'])
-            cost+=math.ceil(self.coverage_rows.metadata_bytes*self.c['clock_hz']/self.c['dram_bandwidth_bytes_per_second'])
+            self.pay_coverage_metadata()
             self.stats['coverage_row_metadata_ops']=self.coverage_rows.scalar_ops
             self.stats['coverage_row_metadata_bytes']=self.coverage_rows.metadata_bytes
             if self.c.get('coverage_layout_domains',False):
@@ -2967,8 +3009,6 @@ class Simulator:
             if self.c.get('coverage_link_domains',False):
                 self.stats['coverage_link_domains']=len(self.coverage_rows.native_link_domains)
                 self.stats['coverage_link_domain_reuses']=self.coverage_rows.native_link_domain_reuses
-            self.stats['coverage_row_preparation_cycles']=cost
-            self.stats['coverage_preparation_cycles']+=cost;self.cycle+=cost
         # Final dirty data must leave the accelerator before E2E completion.
         if self.c.get('event_local_completion',False):
             # Local dispatch barriers never retire an unrelated outstanding
@@ -3008,4 +3048,11 @@ class Simulator:
                         vector_issue_fraction=self.stats['vector_cycles']/max(1,self.cycle),
                         dram_service_fraction=(self.memory.stats['dram_read_bytes']+self.memory.stats['dram_write_bytes'])*self.c['clock_hz']/self.c['dram_bandwidth_bytes_per_second']/max(1,self.cycle),
                         diagnostic_activity_included=not self.stats['diagnostic_cycles'] or self.c.get('finite_diagnostic_pipeline',False)),
-                    stage_cycles={k:int(v) for k,v in self.stages.items()})
+                    stage_cycles={k:int(v) for k,v in self.stages.items()},
+                    audit_events=self.audit_events,
+                    resource_model=dict(vector_execution=self.c.get('vector_execution'),
+                        vector_lanes=self.c['vector_lanes'],
+                        scalar_fp_mac_units=self.c.get('vector_fp_mac_units'),
+                        scalar_iterative_units=self.c.get('vector_iterative_units'),
+                        shares_matrix_array=False),
+                    implementation_validation='requires_paired_implementation_record')

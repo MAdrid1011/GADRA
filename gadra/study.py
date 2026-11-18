@@ -50,7 +50,8 @@ def records(manifest,model,role):
         if r.get('source_split')!=expected_split:
             raise ValueError('Scene role must match its official training/validation source split')
         r['raw']=str(local_path(manifest,r['raw']))
-        for key in ('orin_timing','scene_labels','scene_indices','readout_manifest'):
+        for key in ('orin_timing','scene_labels','scene_indices','readout_manifest',
+                    'implementation_contract','rtl_trace'):
             if key in r:r[key]=str(local_path(manifest,r[key]))
         selected.append(r)
     seen={}
@@ -155,14 +156,16 @@ def replay(args):
     from .experiment import run_case
     from .graph import Graph
     from .checkpoints import select
-    from .predictor import DemandLUT
+    from .implementation import read_contract,capture_digest,validate_pair
     manifest=read_manifest(args.manifest);config=json.loads(args.config.read_text());profile=validate(config,sensitivity=args.sensitivity)
     calibration=records(manifest,args.model,'calibration')
     tests=records(manifest,args.model,args.role)
     identities={readout_identity(r['readout_manifest'],manifest,args.model) for r in calibration+tests}
     if len(identities)!=1:raise ValueError('Calibration and testing must share frozen diagnostic weights')
-    training,contexts=calibration_observations(args.model,calibration,config)
-    predictor=DemandLUT(training,config,contexts)
+    model_only=getattr(args,'model_only',False)
+    for entry in tests:
+        if not model_only and (not entry.get('implementation_contract') or not entry.get('rtl_trace')):
+            raise ValueError('Paper aggregation requires the implementation contract and matching RTL record')
     args.output.mkdir(parents=True,exist_ok=True)
     scenes={};runs=[]
     revision=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
@@ -173,6 +176,8 @@ def replay(args):
             if metadata.get(key)!=r[key]:raise ValueError(f'Trace and scene manifest disagree on {key}')
         if trace.get('readout_manifest_sha256')!=next(iter(identities)):
             raise ValueError('Trace was captured with different frozen readouts')
+        contract=None if model_only else read_contract(r['implementation_contract'],config)
+        captured=capture_digest(raw,tag)
         result_dir=args.output/r['dataset']/r['scene_id']/str(r['fragment_index'])
         result_dir.mkdir(parents=True,exist_ok=True)
         reference=json.loads(Path(r['orin_timing']).read_text())
@@ -181,16 +186,38 @@ def replay(args):
         result=Path(run_case(args.model,r['dataset'],args.config,raw,result_dir,
             variant_names=('none','A','B','AB'),case_tag=tag,calibration_records=calibration))
         record=json.loads(result.read_text())
+        validation=(dict(status='architectural_model_only',capture_sha256=captured)
+            if model_only else validate_pair(record,r['rtl_trace'],contract,captured,config))
+        record['implementation_validation']=validation
         record.update(manifest_sha256=manifest['_sha256'],source_revision=revision)
         result.write_text(json.dumps(record,indent=2)+'\n')
         graph=Graph(raw/(tag+'.json'));obs,cps=select(args.model,dict(np.load(raw/(tag+'_observations.npz'))),graph.maps['checkpoints'])
-        context=min(cps,key=lambda cp:cp['spec']['shape'][0])['mapping']
-        stops,_,_=predictor.decide(obs,context)
+        committed=record['variants']['AB']
+        decision_file=result_dir/committed['decisions_file']
+        if digest(decision_file)!=committed['decisions_sha256']:
+            raise ValueError('The committed execution decision artifact changed')
+        stops=np.load(decision_file)['stop_depths']
+        if (stops.dtype.kind not in 'iu' or stops.shape!=(obs['scores'].shape[1],) or
+            np.any(stops<0) or np.any(stops>=len(obs['scores']))):
+            raise ValueError('Committed depths do not match the captured query readouts')
         scores=obs['scores'];early=scores[stops,np.arange(len(stops))]
-        ids=np.load(r['scene_indices'])
+        native_index=np.load(r['scene_indices'])
+        if not isinstance(native_index,np.ndarray):
+            ids=native_index['vertex_ids']
+            prediction_rows=native_index['prediction_rows']
+            if (prediction_rows.dtype.kind not in 'iu' or prediction_rows.ndim!=1 or
+                ids.shape!=prediction_rows.shape or np.any(prediction_rows<0) or
+                np.any(prediction_rows>=len(stops))):
+                raise ValueError('Native backprojection refers to another prediction row')
+            early=early[prediction_rows]
+            full_scores=scores[-1,prediction_rows]
+            native_index.close()
+        else:
+            ids=native_index
+            full_scores=scores[-1]
         scene=scenes.setdefault((r['dataset'],r['scene_id']),dict(parts=[],full=[],labels=r['scene_labels'],
             orin_ms=0,cycles={v:0 for v in ('none','A','B','AB')},class_ids=manifest['classes'][r['dataset']]))
-        scene['parts'].append((ids,early));scene['full'].append((ids,scores[-1]))
+        scene['parts'].append((ids,early));scene['full'].append((ids,full_scores))
         scene['orin_ms']+=record['baseline']['orin_measured_ms']
         for v in scene['cycles']:scene['cycles'][v]+=record['variants'][v]['cycles']
         runs.append(dict(model=args.model,dataset=r['dataset'],scene_id=r['scene_id'],fragment_index=r['fragment_index'],
@@ -213,6 +240,7 @@ def replay(args):
         gadra_ms=acc['cycles']/config['clock_hz']*1000
         summary.append(dict(dataset=dataset,model=args.model,orin_ms=acc['orin_ms'],gadra_cycles=acc['cycles'],
             frequency_hz=config['clock_hz'],gadra_ms=gadra_ms,speedup=acc['orin_ms']/gadra_ms,
+            implementation_validation=('architectural_model_only' if model_only else 'matched_paired_verilator_record'),
             gadra_quality=metrics(acc['confusion']),orin_quality=metrics(acc['full'])))
     (args.output/'runs.json').write_text(json.dumps(runs,indent=2)+'\n')
     (args.output/'summary.json').write_text(json.dumps(dict(profile=profile,manifest_sha256=manifest['_sha256'],
@@ -226,6 +254,8 @@ def main(model=None):
     parser.add_argument('--config',type=Path,default=Path('configs')/((model or 'scenesplat').lower()+'_scannet.json'))
     parser.add_argument('--role',choices=('tuning','test'),default='test')
     parser.add_argument('--sensitivity',action='store_true',help='permit a changed termination threshold or paired residency capacity')
+    parser.add_argument('--model-only',action='store_true',
+        help='inspect architectural replay without claiming a paired implementation validation')
     parser.add_argument('--output',type=Path,default=Path('results/paper'))
     replay(parser.parse_args())
 

@@ -32,15 +32,35 @@ Completed response records match checkpoint, shared input, and current winning
 category. Up to four completed consumers per context provide records, with
 matching responses reduced by maximum. A matched conditional table combines
 variation, score gap, and response. A missing response uses the local table.
+When a response matches, its conditional cell is selected even if that cell
+has fewer than 64 calibration observations. Such a cell contains infinity
+and continues execution; it does not fall back to a supported local cell.
 The larger of the selected table output and applicable response is compared
 with the default termination threshold of 0.02. Only completed consumers supply
 future-response evidence. Their computation and response publication precede
 any decision that uses it.
 
-Output termination cancels later output work. Original dependency closure
-retains producers referenced by other active consumers. `predictor.py` models
-the decision, `diagnostic_pipeline.py` lowers its paid observation work, and
-`engine.py` issues the retained dependency tasks.
+`online.execute_online()` first completes the fixed, input-derived pilots and
+publishes their responses. It then executes each native prefix using currently
+pending output requests. `DecisionState.propose()` receives only scores at
+the current checkpoint and committed history. Its proposed exits become
+visible to task cancellation after the diagnostic program finishes and
+`commit()` records the completion cycle. Future checkpoint requests initially
+remain active. Only committed exits remove them.
+
+Original dependency closure retains producers referenced by other pending
+consumers. Reference decrements and their metadata transfers are charged
+before the next native prefix. Cancellation applies only to unissued tasks:
+earlier work, memory accesses, and cache effects remain in the execution
+ledger. Group-order construction similarly completes on the scalar path and
+shared DRAM port before consumers use the resulting maps. `predictor.decide()`
+is a whole-trace numerical reference, not the timed scheduler. Scene quality
+reads the actual committed depths written by the timed path.
+
+The private field `unsupported_conditional_local_candidates` counts distinct
+positions where the old local fallback would permit an exit at a visited
+checkpoint but the selected conditional cell is unsupported. It is a prefix
+diagnostic, not a measured quality delta between two complete policies.
 
 ## CGR
 

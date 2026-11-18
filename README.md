@@ -13,6 +13,11 @@ accumulator registers, 16 KiB output SRAM, and 80 KiB control/history SRAM.
 The 64-entry feature directory directly owns the 64 payload slots. Scheduler
 candidate windows and consumer queues have separate limits.
 
+The scalar path has one FP MAC, one iterative FP unit, and one serialized
+sequencer (`vector_lanes = 1`). Matrix and scalar work use separate resources.
+Ordinary scalar operations, integer-map construction, diagnostics, grouping,
+and dependency updates share this sequencer and its reservation ledger.
+
 CDP uses L1-normalized query scores, adjacent-checkpoint L1 variation, candidate
 score gaps, and completed shared-consumer responses to predict remaining
 cumulative semantic change. CGR orders consumers using scale-normalized Gaussian
@@ -56,6 +61,12 @@ python -m gadra evaluate --model SceneSplat --manifest local/study.json \
   --config configs/scenesplat_scannet.json --output results/paper/scenesplat
 ```
 
+Paper aggregation checks matching private implementation records as described
+in [Implementation comparison](docs/implementation.md). Use `--model-only`
+for architectural exploration without a paired RTL record; generated records
+identify this mode. Native task admissions and checkpoint decisions are
+recorded during execution, and scene quality uses these committed decisions.
+
 Use `Chorus` with `configs/chorus_scannet.json`, or `EmbodiedSplat` with
 `configs/embodiedsplat_scannet.json`, for the other models. The model-specific
 scripts in `scripts/` expose the same manifest-driven interface.
@@ -70,3 +81,4 @@ generated reports remain in ignored local directories.
 - [CDP and CGR definitions](docs/mechanism-correspondence.md)
 - [Fixed-split, all-fragment evaluation](docs/evaluation.md)
 - [External workload adapters](docs/workloads.md)
+- [Scalar resources and causal implementation comparison](docs/implementation.md)

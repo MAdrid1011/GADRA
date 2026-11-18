@@ -11,6 +11,8 @@ from gadra.engine import Memory,ReferenceMemory
 from gadra.predictor import query_scores,remaining_correction,DemandLUT,witness_layout
 from gadra.baseline import from_orin_measurement,reference_metadata
 from gadra.study import merge_scene,metrics,read_manifest,records,energy_efficiency
+from gadra.online import DecisionState,execute_online
+from gadra.implementation import audit_signature
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -32,6 +34,8 @@ class PaperContract(unittest.TestCase):
             c=json.loads(path.read_text());report=validate(c)
             self.assertEqual(report['total_storage_bytes'],152*1024)
             self.assertEqual(c['feature_sram_bytes']//SLOT_BYTES,64)
+            self.assertEqual(c['vector_lanes'],1)
+            self.assertEqual(c['vector_execution'],'independent_scalar_sequencer')
             self.assertEqual(c['arrays']*c['array_rows']*c['array_cols']*2*c['clock_hz'],report['peak_fp32_flops'])
         self.assertEqual(DMA_BURST_BYTES,64)
         self.assertEqual(SLOT_BYTES,128)
@@ -105,6 +109,48 @@ class PaperContract(unittest.TestCase):
         changed=copy.deepcopy(obs);changed['scores'][-1,index]=[.01,.99]
         next_stop,_,_=predictor.decide(changed,context)
         self.assertEqual(next_stop[index],stop[index])
+
+    def test_conditional_low_support_never_falls_back_to_local(self):
+        from types import SimpleNamespace
+        c=configuration()
+        local=[np.full(16,.015,np.float32) for _ in range(3)]
+        conditional=[np.full(64,np.inf,np.float32) for _ in range(3)]
+        edges=[(np.array([.1,.2,.3]),np.array([.1,.2,.3])) for _ in range(3)]
+        re=[np.array([.1,.2,.3]) for _ in range(3)]
+        predictor=SimpleNamespace(config=c,table=local,response_table=conditional,
+                                 edges=edges,response_edges=re)
+        records=(np.zeros((3,1,4),np.int32),np.full((3,1,4),.010,np.float32),np.array([0]))
+        state=DecisionState(predictor,np.array([0]),np.array([False]))
+        score=np.array([[.8,.2]],np.float32)
+        state.propose(0,score,records);state.commit(10)
+        proposal=state.propose(1,score,records)
+        self.assertEqual(proposal.exits.size,0)
+        np.testing.assert_array_equal(proposal.unsupported_matches,[0])
+        self.assertEqual(int(state.stops[0]),2)
+        state.commit(20)
+        self.assertTrue(state.pending[0])
+        # A missing matching response legitimately selects the supported local cell.
+        other=DecisionState(predictor,np.array([0]),np.array([False]))
+        other.propose(0,score,None);other.commit(10)
+        proposal=other.propose(1,score,None)
+        np.testing.assert_array_equal(proposal.exits,[0])
+        self.assertEqual(int(other.stops[0]),2)  # Proposal is not yet a committed exit.
+        other.commit(20)
+        self.assertEqual(int(other.stops[0]),1)
+
+    def test_audit_rejects_scalar_overlap_and_retroactive_cancellation(self):
+        scalar=lambda a,b:dict(kind='scalar_issue',operator='unit',domain='native',
+            begin=a,end=b,resource='independent_scalar_sequencer')
+        with self.assertRaises(ValueError):audit_signature([scalar(0,5),scalar(4,6)],10)
+        audit_signature([scalar(0,5),scalar(5,6)],10)
+        committed=dict(kind='checkpoint_commit',depth=1,cycle=4,positions=[0])
+        cancel=dict(kind='task_cancel',event=1,cycle=5,decision_cycle=4,depth=1,positions=[0])
+        issued=dict(kind='native_issue',event=1,cycle=2,positions=[0])
+        with self.assertRaises(ValueError):audit_signature([issued,committed,cancel],10)
+        with self.assertRaises(ValueError):audit_signature([cancel,committed],10)
+        with self.assertRaises(ValueError):
+            audit_signature([committed,cancel,dict(issued,cycle=6)],10)
+        audit_signature([committed,cancel],10)
 
     def test_rtx_and_renamed_old_references_are_rejected(self):
         r={'measured':True,'device':'RTX source','samples':[{'gpu_ms':1.}]}
@@ -191,7 +237,6 @@ class PaperContract(unittest.TestCase):
         from gadra.graph import Graph,rows
         from gadra.engine import Simulator
         from gadra.predictor import DemandLUT
-        from gadra.diagnostic_pipeline import complete_feedback
         from gadra.readout import affine_recipe
 
         c=configuration();n=128
@@ -214,24 +259,30 @@ class PaperContract(unittest.TestCase):
         trace=dict(model='SceneSplat',dataset='unit',events=events,storages=[dict(id=t['storage'],address=t['address'],bytes=t['bytes']) for t in storages],output_shape=y['shape'])
         score=np.tile(np.array([.8,.2],np.float32),(8,n,1));shape=score.shape[:2]
         obs=dict(scores=score,winner=np.zeros(shape,np.int32),margin=np.full(shape,.6,np.float32),target=np.zeros(n,np.int32),regret=np.zeros(shape,np.float32),cosine=np.ones(shape,np.float32),squared_error=np.zeros(shape,np.float32))
-        contexts=np.zeros(n,np.int64);predictor=DemandLUT([obs],c,[contexts]);stops,witnesses,q=predictor.decide(obs,contexts)
+        contexts=np.zeros(n,np.int64);predictor=DemandLUT([obs],c,[contexts])
+        _,owners=witness_layout(contexts,c)
+        witnesses=np.zeros(n,bool);witnesses[owners[owners>=0]]=True
+        full_stops=np.full(n,7,np.int16)
         with tempfile.TemporaryDirectory() as d:
          p=Path(d)/'unit.json';p.write_text(json.dumps(trace));p.with_name('unit_maps.pkl').write_bytes(pickle.dumps(dict(indices={},maps={},checkpoints=cps)))
          for b in (False,True):
           g=Graph(p);context=dict(cps[0]);context['spec']=dict(cps[0]['spec'],shape=[1,4]);context['mapping']=contexts
           g.maps.update(response_context=context,observation_begin=0,observation_end=7)
-          first=g.closure(g.checkpoint_seeds(stops,witnesses));total=g.closure(g.checkpoint_seeds(stops));second=total.minus(first)
+          first=g.closure(g.checkpoint_seeds(full_stops,witnesses))
           deployed=dict(c,control_sram_bytes=9000)
           sim=Simulator(g,deployed,coverage=b,order=np.arange(n),demand=True)
           sim.predictor_edges=predictor.edges;sim.predictor_response_edges=predictor.response_edges
           sim.predictor_gate_support=None;sim.predictor_nearest_edges=None
           sim.predictor_response_actions=[a<=.02 for a in predictor.response_table];sim.predictor_nearest_actions=[]
           sim.install_predictor(predictor.storage_bytes());sim.initialize_responses(64)
-          sim.execute(first,control=(obs,stops,witnesses,'pilot'));complete_feedback(sim,obs,witnesses)
-          sim.execute(second,control=(obs,stops,witnesses,'remaining'));r=sim.finish()
+          state,kept=execute_online(sim,predictor,obs,witnesses,first)
+          stops=state.stops;r=sim.finish()
           self.assertGreater(r['cycles'],0)
           self.assertEqual(r['statistics'].get('early_output_rows',0),int((stops<7).sum()))
           self.assertGreater(int((stops<7).sum()),0)
+          self.assertGreater(kept,0)
+          signature=audit_signature(r['audit_events'],r['cycles'])
+          self.assertEqual(set(signature['decisions']),set(np.flatnonzero(stops<7)))
 
     def test_power_requires_rail_interval_and_dram_boundary(self):
         with self.assertRaises(ValueError):energy_efficiency(1.,{'mean_watts':1.},{'mean_watts':1.})

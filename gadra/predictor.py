@@ -247,10 +247,8 @@ def state_features(observations,window,space='language',history_fp16=False):
         if depth:tv[depth]=delta[begin:depth+1].sum(0)/max(1,depth-begin+1)
     margin=observations['margin'].astype(np.float32)
     if space=='query_scores':
-        if 'control_scores' in observations:
-            top=np.partition(score,-2,axis=2)[:,:,-2:]
-            margin=top.max(2)-top.min(2)
-        else:margin=margin/scale[:,:,0]
+        top=np.partition(score,-2,axis=2)[:,:,-2:]
+        margin=top.max(2)-top.min(2)
     return tv,margin
 
 
@@ -304,7 +302,9 @@ def completed_responses(observations,contexts,config):
     pilot={k:(v[:,witnesses] if v.ndim>=2 and v.shape[1]==len(contexts) else v)
            for k,v in observations.items()}
     correction=remaining_correction(pilot,config.get('correction_horizon','suffix'))
-    records=response_records(contexts,witnesses,pilot['winner'],correction,config)
+    winners=(query_scores(pilot)[0].argmax(2)
+        if config.get('correction_horizon')=='cumulative_l1' else pilot['winner'])
+    records=response_records(contexts,witnesses,winners,correction,config)
     match=config.get('response_match_winner',False)
     current=query_scores(observations)[0].argmax(2) if match else None
     return witnesses,lookup_responses(records,current,match)
@@ -706,6 +706,7 @@ class DemandLUT:
             a.nbytes for pair in self.edges for a in pair)+sum(a.nbytes for a in self.response_edges)
 
     def decide(self,observations,contexts):
+        """Whole-trace numerical reference; timed execution uses online.DecisionState."""
         config=self.config;tv,margin=demand_features(observations,config)
         depth_count,n=tv.shape;bins=config['predictor_bins']
         edges=self.edges
@@ -730,12 +731,16 @@ class DemandLUT:
                 rb=config['predictor_response_bins']
                 ids=response_state_keys(observations,config,depth,ids)*rb+np.searchsorted(self.response_edges[depth],response)
                 conditional=self.response_table[depth][ids]
-                usable=np.isfinite(response)&np.isfinite(conditional)
-                estimate[usable]=conditional[usable]
-                conditioned_rows+=int((usable&(~witnesses)&(stop==depth_count-1)).sum())
+                # A matching response selects the conditional cell. An
+                # unsupported cell is +inf and must continue, even if the
+                # independently calibrated local cell would permit an exit.
+                matched=np.isfinite(response)
+                estimate[matched]=conditional[matched]
+                conditioned_rows+=int((matched&(~witnesses)&(stop==depth_count-1)).sum())
             estimate=np.maximum(estimate,response)
             lowered_rows+=int(((estimate<prior)&(~witnesses)&(stop==depth_count-1)).sum())
-            tolerance=min(config['semantic_tolerance'],config.get('class_repair_tolerance',config['semantic_tolerance']))
+            tolerance=(config['semantic_tolerance'] if config.get('profile')=='paper-v1' else
+                min(config['semantic_tolerance'],config.get('class_repair_tolerance',config['semantic_tolerance'])))
             eligible=(stop==depth_count-1)&(~witnesses)&(estimate<=tolerance)
             if nearest is not None:
                 base=np.searchsorted(te,tv[depth])*bins+np.searchsorted(me,margin[depth])
@@ -773,8 +778,10 @@ def remaining_correction(observations,horizon='suffix'):
         delta=np.zeros(score.shape[:2],dtype=np.float32)
         delta[1:]=np.abs(score[1:]-score[:-1]).sum(2)
         # At checkpoint d, sum only changes introduced after d.
-        suffix=np.cumsum(delta[:0:-1],axis=0,dtype=np.float32)[::-1]
-        return np.concatenate([suffix,np.zeros((1,score.shape[1]),np.float32)],axis=0)
+        result=np.zeros(score.shape[:2],np.float32)
+        # Match completed pilots' forward FP32 accumulation order exactly.
+        for depth in range(1,len(score)):result[:depth]+=delta[depth]
+        return result
     score=observations['scores'].astype(np.float32)
     winner=observations['winner']
     peak=score.max(2)

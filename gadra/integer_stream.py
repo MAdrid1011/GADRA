@@ -134,6 +134,7 @@ class Stream:
             end=self.sim.vector_queue.reserve(begun,self.ready-begun,begun)
             if end!=self.ready:raise AssertionError('Counter packet lost exclusive vector interval')
         self.sim.vector=max(self.sim.vector,self.ready)
+        self.sim.record_scalar_interval(begun,self.ready,operator='integer_counter_updates')
         if self.sim.activity is not None:self.sim.activity.add_vector(begun,self.ready)
         self.operations+=int(work);return result
 
