@@ -251,7 +251,7 @@ def observe(dataset,destination,counters=False,extended=False,wide_kernel=False)
 
 
 def project(trace_path,timing_path,counter_path,counter_metadata,configuration,destination):
-    """Orin projection of this candidate's own complete software execution."""
+    """Orin reference for this candidate's complete software execution."""
     import json
     from pathlib import Path
     from statistics import median
@@ -271,8 +271,8 @@ def project(trace_path,timing_path,counter_path,counter_metadata,configuration,d
     result.update(model=meta['model'],dataset=meta['dataset'],variant=meta['variant'],
                   quality=timing['quality'],trace_source=str(trace_path),timing_source=str(timing_path),
                   counter_metadata_source=str(counter_metadata),
-                  scope=meta['scope'],comparison_note='Mixed-precision candidate-specific software projection, not A/B')
+                  scope=meta['scope'],comparison_note='Mixed-precision candidate-specific Orin software reference')
     path=Path(destination);path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(result,indent=2)+'\n')
-    print(meta['dataset'],'same-candidate Orin projection',result['orin_reference_ms'],'ms',flush=True)
+    print(meta['dataset'],'same-candidate Orin reference',result['orin_reference_ms'],'ms',flush=True)
     return result

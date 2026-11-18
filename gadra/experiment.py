@@ -15,7 +15,7 @@ from .graph import Graph,rows,key
 from .engine import Simulator
 from .predictor import (DemandLUT,select_checkpoints,response_record_words,
                         selector_storage_bytes)
-from .baseline import project
+from .baseline import project,reference_metadata
 
 MODELS=('SceneSplat','Chorus','EmbodiedSplat')
 DATASETS=('scannet','scannetpp','matterport3d')
@@ -71,7 +71,7 @@ def anchor(graph,baseline,config):
         input_rows=graph.trace['output_shape'][0],logical_tensor_read_bytes=raw_read,
         logical_tensor_write_bytes=raw_write,peak_arithmetic_floor_ms=matrix_arithmetic_floor_ms(graph,config),
         scope='Static real event shapes and actual sparse edge maps; no average per-layer cost',
-        orin_projection=baseline)
+        orin_reference=baseline)
 
 
 def run_case(model,dataset,config_path,raw_directory,result_directory,reference=None,training_raw=None,variant_names=None):
@@ -110,13 +110,14 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
     graph.maps['coverage_checkpoints']=graph.maps['checkpoints']
     obs,graph.maps['checkpoints']=select_checkpoints(obs,graph.maps['checkpoints'],config['checkpoint_policy'])
     if reference:
-        baseline=json.loads(Path(reference).read_text())
+        baseline=reference_metadata(json.loads(Path(reference).read_text()))
         if baseline.get('model')!=model or baseline.get('dataset')!=dataset:
             raise ValueError('Software reference belongs to a different workload')
         if not baseline.get('quality',{}).get('passes_thresholds',False):
             raise ValueError('Software reference failed quality')
-        if baseline.get('status')!='projection_only' or baseline.get('Orin_measured') is not False:
-            raise ValueError('Expected an explicit RTX-to-Orin software projection')
+        if (baseline.get('status')!='orin_reference' or baseline.get('Orin_measured') is not False
+                or baseline.get('reference_method')!='stage_compute_bandwidth_scaling'):
+            raise ValueError('Expected an Orin reference with source timing and platform-scaling metadata')
         full_quality=graph.trace.get('quality',{})
         if not full_quality.get('passes_thresholds',False):raise ValueError('Candidate trace failed quality')
     else:
@@ -284,7 +285,7 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
         arithmetic_cycles+=((diagnostic_flops-half_flops)*config['fp32_mac_cycles']+half_flops)/peak*config['clock_hz']
         result['optimistic_arithmetic_floor_ms']=arithmetic_cycles/config['clock_hz']*1000
         result['optimistic_arithmetic_speedup_ceiling']=baseline['orin_reference_ms']/result['optimistic_arithmetic_floor_ms']
-        result['speedup_vs_orin_projection']=baseline['orin_reference_ms']/result['ms']
+        result['speedup_vs_orin_reference']=baseline['orin_reference_ms']/result['ms']
         result['speedup_vs_ideal_orin_roof']=baseline['ideal_orin_roof_ms']/result['ms']
         result['pilot_completed_cycle']=pilot_completed
         if prepared is not None:
@@ -295,7 +296,7 @@ def run_case(model,dataset,config_path,raw_directory,result_directory,reference=
             result['optimistic_arithmetic_floor_ms']+=preparation_floor_ms
             include_preparation(result,prepared,config)
             result['optimistic_arithmetic_speedup_ceiling']=baseline['orin_reference_ms']/result['optimistic_arithmetic_floor_ms']
-            result['speedup_vs_orin_projection']=baseline['orin_reference_ms']/result['ms']
+            result['speedup_vs_orin_reference']=baseline['orin_reference_ms']/result['ms']
             result['speedup_vs_ideal_orin_roof']=baseline['ideal_orin_roof_ms']/result['ms']
         variants[name]=result
         print(tag,list(variants)[-1],round(result['ms'],3),'ms',flush=True)
@@ -375,7 +376,8 @@ def report(directory):
                 orin_ms=r['baseline']['orin_reference_ms'],none_cycles=v['none']['cycles'],
                 A_cycles=v['A']['cycles'],B_cycles=v['B']['cycles'],AB_cycles=v['AB']['cycles'],
                 none_ms=v['none']['ms'],A_ms=v['A']['ms'],B_ms=v['B']['ms'],AB_ms=v['AB']['ms'],
-                speedup=v['AB']['speedup_vs_orin_projection'],B_speedup=v['B']['speedup_vs_orin_projection'],
+                speedup=r['baseline']['orin_reference_ms']/v['AB']['ms'],
+                B_speedup=r['baseline']['orin_reference_ms']/v['B']['ms'],
                 B_vs_none=v['none']['cycles']/v['B']['cycles'],
                 AB_vs_none=v['none']['cycles']/v['AB']['cycles'],
                 AB_speedup_low=r['baseline']['orin_ms_range'][0]/v['AB']['ms'],
@@ -393,9 +395,9 @@ def report(directory):
         with (directory/'summary.csv').open('w') as f:
             writer=csv.DictWriter(f,fieldnames=list(records[0]),lineterminator='\n');writer.writeheader();writer.writerows(records)
     lines=['# GADRA 九组周期模拟结果','',
-        'AGX Orin 为本地 RTX 实测时间/DRAM 与计算 roof 比推算；加速器为事务/tile 周期模拟。每组一个真实完整输入片段，未声称全数据集或整场景测试。',
+        'AGX Orin 参考基线采用本地 RTX 的 CUDA 计时与 DRAM 计数，按阶段计算与带宽服务需求之比换算；加速器采用事务/tile 周期模拟。每组评估一个真实输入片段的完整编码。',
         '',f"性能实现版本：`{cases[0]['implementation_revision']}`。九组使用同一资源与预测配置。A=语义轨迹/上下文反馈；B=覆盖消费/特征驻留；∅=相同硬件资源关闭 A、B。",
-        '', '| 模型 | 数据集 | Orin 推算 ms | 无优化 ms | A ms | B ms | AB ms | AB 加速 | 类别一致 | 余弦 | ε内比例 | 质量门槛 |',
+        '', '| 模型 | 数据集 | Orin 参考 ms | 无优化 ms | A ms | B ms | AB ms | AB 加速 | 类别一致 | 余弦 | ε内比例 | 质量门槛 |',
         '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|']
     for r in records:
         vals=[r['none_ms'],r['A_ms'],r['B_ms'],r['AB_ms']]

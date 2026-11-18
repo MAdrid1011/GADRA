@@ -31,7 +31,7 @@ For each model/dataset pair, `local/captures/<model>/` contains:
 - `_observations.npz`: real per-stage semantic observations;
 - `_geometry.npz`: real Gaussian geometry;
 - `_coverage.npz` and `_coverage.json`: coverage order and metadata;
-- `_gpu.json`: measured local-GPU reference and Orin projection inputs.
+- `_gpu.json`: measured local-GPU timing and counter inputs for the Orin reference baseline.
 
 Replay rejects missing files and mismatched model or dataset identities. It
 does not generate random replacements or silently fall back to toy inputs.

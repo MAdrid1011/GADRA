@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from gadra.experiment import run_case, run_case_parallel
+from gadra.baseline import reference_metadata
 from gadra.memory_core import COMPILED
 
 
@@ -66,7 +67,7 @@ def summarize(dataset, output, record, base_record):
             "ms": result["ms"],
             "speedup_vs_original_base": base["ms"] / result["ms"],
             "speedup_vs_same_resource_none": same_none / result["ms"],
-            "speedup_vs_orin_projection": (
+            "speedup_vs_orin_reference": (
                 record["baseline"]["orin_reference_ms"] / result["ms"]
             ),
             "speedup_vs_ideal_orin_roof": (
@@ -103,7 +104,7 @@ def summarize(dataset, output, record, base_record):
         "variants": variants,
         "quality": record["quality"],
         "pruning": record["pruning"],
-        "orin_projection": record["baseline"],
+        "orin_reference": reference_metadata(record["baseline"]),
         "config": record["config"],
     }
     product = (
@@ -198,7 +199,7 @@ def write_readme(dataset, output, summary, base):
         )
     quality = summary["quality"]
     pruning = summary["pruning"]
-    projection = summary["orin_projection"]
+    reference = summary["orin_reference"]
     composition = summary["composition"]
     config = summary["config"]
     pe_count = config["arrays"] * config["array_rows"] * config["array_cols"]
@@ -258,10 +259,11 @@ def write_readme(dataset, output, summary, base):
         f"{composition['AB_fraction_of_same_resource_attainable_target']:.2%} of the "
         "resource-clipped same-resource target.",
         "",
-        f"The RTX measurement is {projection['rtx_measured_ms']:.6f} ms. The AGX Orin "
-        f"center projection is {projection['orin_reference_ms']:.6f} ms with a "
-        f"{projection['orin_ms_range'][0]:.6f}--{projection['orin_ms_range'][1]:.6f} ms "
-        "efficiency range; these are projections rather than Orin measurements.",
+        f"The Orin reference baseline is {reference['orin_reference_ms']:.6f} ms, "
+        f"using {reference['rtx_measured_ms']:.6f} ms of measured RTX source timing "
+        "and per-stage compute/bandwidth scaling. The configured efficiency "
+        f"scenarios span {reference['orin_ms_range'][0]:.6f}--"
+        f"{reference['orin_ms_range'][1]:.6f} ms.",
         "",
         "## Reproduce",
         "",

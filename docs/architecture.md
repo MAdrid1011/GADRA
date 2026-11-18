@@ -39,9 +39,11 @@ separate resident-feature structure. Subarray shape may change, but total PE
 count and capacity do not. Original-base and optimized runs use separate
 tracked configuration files.
 
-## Projection Boundary
+## Reference Baseline
 
-GPU baselines use CUDA-event timing and real operator/traffic counters. AGX
-Orin values scale those observations with tracked compute and bandwidth
-assumptions. GADRA labels them `projection_only` and `Orin_measured: false`;
-they must not be described as measurements on an Orin device.
+GPU references record CUDA-event timing and per-stage operator/traffic
+counters on the source RTX device. The Orin reference baseline scales each
+stage's source timing by the ratio of its compute/bandwidth service demands
+on Orin and RTX, then sums the stage times. Reports retain `orin_reference_ms`,
+`rtx_measured_ms`, counter sources, platform parameters, and efficiency scenarios.
+The metadata identifies this method as `stage_compute_bandwidth_scaling`.

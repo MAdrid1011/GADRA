@@ -1,4 +1,4 @@
-"""RTX-measured, stage-wise arithmetic/traffic Orin transfer scenarios."""
+"""Orin reference baselines from RTX timing and stage service demands."""
 from collections import defaultdict
 import csv
 import json
@@ -7,6 +7,15 @@ import re
 import statistics
 
 from .workloads import WORKLOADS
+
+
+def reference_metadata(record):
+    """Normalize legacy labels while retaining timing and counter provenance."""
+    result=dict(record)
+    if result.get('status') in ('projection_only','orin_reference'):
+        result['status']='orin_reference'
+        result.setdefault('reference_method','stage_compute_bandwidth_scaling')
+    return result
 
 
 def read_kernel_counters(path):
@@ -94,7 +103,8 @@ def project_mixed(costs,groups,source_ms,config,counter_source):
     return dict(rtx_measured_ms=source_ms,orin_reference_ms=reference['orin_ms'],
         orin_ms_range=[min(s['orin_ms'] for s in scenarios),max(s['orin_ms'] for s in scenarios)],
         ideal_orin_roof_ms=reference['ideal_orin_roof_ms'],scenarios=scenarios,counter_source=str(counter_source),
-        status='projection_only',Orin_measured=False,
+        status='orin_reference',Orin_measured=False,
+        reference_method='stage_compute_bandwidth_scaling',
         assumptions=['Measured candidate DRAM and same stage arithmetic; actual Orin L2/codegen may differ',
                      'FP16 and FP32 arithmetic service summed, then max with DRAM service',
                      'Uninstrumented complete timeline allocated by measured kernel-stage durations',
@@ -154,7 +164,8 @@ def project(graph,measurement,config):
     return dict(rtx_measured_ms=source_ms,orin_reference_ms=reference['orin_ms'],
                 orin_ms_range=[min(s['orin_ms'] for s in scenarios),max(s['orin_ms'] for s in scenarios)],
                 ideal_orin_roof_ms=reference['ideal_orin_roof_ms'],scenarios=scenarios,counter_source=source,
-                status='projection_only',Orin_measured=False,
+                status='orin_reference',Orin_measured=False,
+                reference_method='stage_compute_bandwidth_scaling',
                 scope='First real spatial fragment, complete 3D semantic encoding; no disk/host input preprocessing',
                 assumptions=['Same stage arithmetic and measured DRAM volume; Orin L2/codegen may change actual traffic',
                              'Same relative source efficiency in reference; 0.7/1.0/1.3 efficiency scenarios',
